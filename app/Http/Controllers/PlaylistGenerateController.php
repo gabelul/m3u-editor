@@ -127,7 +127,11 @@ class PlaylistGenerateController extends Controller
                     // Use selected EPG fields (avoids N+1 query for epgChannel relation)
                     $epgIcon = $channel->epg_icon ?? null;
                     $epgIconCustom = $channel->epg_icon_custom ?? null;
-                    $channelNo = $channel->channel;
+                    $isCustomContext = ($type === 'custom') || ($type === 'alias' && ! empty($playlist->custom_playlist_id));
+
+                    $channelNo = ($isCustomContext && ! empty($channel->pivot?->channel_number))
+                        ? (int) $channel->pivot->channel_number
+                        : $channel->channel;
                     $timeshift = $channel->shift ?? 0;
                     $stationId = $channel->station_id ?? '';
                     $epgShift = $channel->tvg_shift ?? 0;
@@ -498,7 +502,11 @@ class PlaylistGenerateController extends Controller
                     $extension = $channel->container_extension ?? 'mkv';
                 }
                 $url = rtrim($baseUrl."/{$urlPath}/{$username}/{$password}/".$channel->id.'.'.$extension, '.');
-                $channelNo = $channel->channel;
+                $isCustomContext = ($type === 'custom') || ($type === 'alias' && ! empty($playlist->custom_playlist_id));
+
+                $channelNo = ($isCustomContext && ! empty($channel->pivot?->channel_number))
+                    ? (int) $channel->pivot->channel_number
+                    : $channel->channel;
                 if (! $channelNo && ($autoIncrement || $idChannelBy === PlaylistChannelId::Number)) {
                     $channelNo = ++$channelNumber;
                 }
