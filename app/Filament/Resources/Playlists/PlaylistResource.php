@@ -11,6 +11,7 @@ use App\Filament\Resources\Playlists\Pages\CreatePlaylist;
 use App\Filament\Resources\Playlists\Pages\EditPlaylist;
 use App\Filament\Resources\Playlists\Pages\ListPlaylists;
 use App\Filament\Resources\Playlists\Pages\ViewPlaylist;
+use App\Filament\Resources\PlaylistViewers\PlaylistViewersRelationManager;
 use App\Filament\Tables\SourceCategoriesTable;
 use App\Filament\Tables\SourceGroupsTable;
 use App\Jobs\CopyAttributesToPlaylist;
@@ -776,6 +777,7 @@ class PlaylistResource extends Resource
     public static function getRelations(): array
     {
         return [
+            PlaylistViewersRelationManager::class,
             // Removed SyncStatusesRelationManager to avoid showing it as a tab
             // Sync statuses are now accessible via direct navigation to the nested resource
         ];

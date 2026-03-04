@@ -12,6 +12,7 @@ use App\Filament\Resources\CustomPlaylists\RelationManagers\ChannelsRelationMana
 use App\Filament\Resources\CustomPlaylists\RelationManagers\GroupsRelationManager;
 use App\Filament\Resources\CustomPlaylists\RelationManagers\SeriesRelationManager;
 use App\Filament\Resources\CustomPlaylists\RelationManagers\VodRelationManager;
+use App\Filament\Resources\PlaylistViewers\PlaylistViewersRelationManager;
 use App\Models\CustomPlaylist;
 use App\Models\PlaylistAuth;
 use App\Models\StreamProfile;
@@ -192,6 +193,7 @@ class CustomPlaylistResource extends Resource
             SeriesRelationManager::class,
             GroupsRelationManager::class,
             CategoriesRelationManager::class,
+            PlaylistViewersRelationManager::class,
         ];
     }
 

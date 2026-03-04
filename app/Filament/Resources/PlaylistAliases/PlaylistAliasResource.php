@@ -5,6 +5,7 @@ namespace App\Filament\Resources\PlaylistAliases;
 use App\Facades\PlaylistFacade;
 use App\Filament\Resources\CustomPlaylists\CustomPlaylistResource;
 use App\Filament\Resources\Playlists\PlaylistResource;
+use App\Filament\Resources\PlaylistViewers\PlaylistViewersRelationManager;
 use App\Models\CustomPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
@@ -205,7 +206,7 @@ class PlaylistAliasResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            PlaylistViewersRelationManager::class,
         ];
     }
 
