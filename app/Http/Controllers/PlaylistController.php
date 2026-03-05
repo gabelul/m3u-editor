@@ -287,19 +287,31 @@ class PlaylistController extends Controller
         }
 
         $preferredPlaylistId = null;
+        $preferredFromRequest = false;
         if (array_key_exists('preferred_playlist_id', $validated)) {
             $preferredPlaylistId = $validated['preferred_playlist_id'];
+            $preferredFromRequest = true;
         } elseif (array_key_exists('playlist_id', $validated)) {
             $preferredPlaylistId = $validated['playlist_id'];
+            $preferredFromRequest = true;
         } else {
             $preferredPlaylistId = $config['preferred_playlist_id'] ?? null;
         }
 
         if ($preferredPlaylistId) {
-            $preferredPlaylistId = Playlist::query()
+            $resolvedId = Playlist::query()
                 ->where('user_id', $user->id)
                 ->where('id', (int) $preferredPlaylistId)
                 ->value('id');
+
+            if (! $resolvedId && $preferredFromRequest) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The preferred_playlist_id is invalid or does not belong to your account',
+                ], 422);
+            }
+
+            $preferredPlaylistId = $resolvedId;
         }
 
         $effectivePreferredPlaylistId = $preferredPlaylistId ? (int) $preferredPlaylistId : $playlist->id;

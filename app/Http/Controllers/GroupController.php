@@ -6,6 +6,7 @@ use App\Facades\PlaylistFacade;
 use App\Models\Group;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -242,20 +243,13 @@ class GroupController extends Controller
     {
         $user = $request->user();
 
-        $group = Group::find($id);
+        $group = Group::where('user_id', $user->id)->find($id);
 
         if (! $group) {
             return response()->json([
                 'success' => false,
                 'message' => 'Group not found',
             ], 404);
-        }
-
-        if ($group->user_id !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'You do not have permission to update this group',
-            ], 403);
         }
 
         $validated = $request->validate([
@@ -314,19 +308,12 @@ class GroupController extends Controller
     {
         $user = $request->user();
 
-        $group = Group::find($id);
+        $group = Group::where('user_id', $user->id)->find($id);
         if (! $group) {
             return response()->json([
                 'success' => false,
                 'message' => 'Group not found',
             ], 404);
-        }
-
-        if ($group->user_id !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'You do not have permission to update this group',
-            ], 403);
         }
 
         $validated = $request->validate([
@@ -394,19 +381,12 @@ class GroupController extends Controller
     {
         $user = $request->user();
 
-        $group = Group::find($id);
+        $group = Group::where('user_id', $user->id)->find($id);
         if (! $group) {
             return response()->json([
                 'success' => false,
                 'message' => 'Group not found',
             ], 404);
-        }
-
-        if ($group->user_id !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'You do not have permission to delete this group',
-            ], 403);
         }
 
         if (! $group->custom) {
@@ -430,6 +410,7 @@ class GroupController extends Controller
         $movedCount = 0;
         $deletedChannels = 0;
 
+        $targetGroup = null;
         $targetGroupId = $validated['target_group_id'] ?? null;
         if ($targetGroupId !== null) {
             if ((int) $targetGroupId === $group->id) {
@@ -460,11 +441,6 @@ class GroupController extends Controller
                     'message' => 'Target group must be the same type as the source group',
                 ], 422);
             }
-
-            $movedCount = $group->channels()->update([
-                'group' => $targetGroup->name,
-                'group_id' => $targetGroup->id,
-            ]);
         } elseif ($channelCount > 0) {
             $force = (bool) ($validated['force'] ?? false);
             if (! $force) {
@@ -476,13 +452,24 @@ class GroupController extends Controller
                     ],
                 ], 409);
             }
-
-            $deletedChannels = $channelCount;
         }
 
         $groupId = $group->id;
         $groupName = $group->name;
-        $group->delete();
+
+        DB::transaction(function () use ($group, $targetGroupId, $targetGroup, &$movedCount, &$deletedChannels) {
+            if ($targetGroupId !== null && isset($targetGroup)) {
+                $movedCount = $group->channels()->update([
+                    'group' => $targetGroup->name,
+                    'group_id' => $targetGroup->id,
+                ]);
+            } elseif ($group->channels()->exists()) {
+                $deletedChannels = $group->channels()->count();
+                $group->channels()->delete();
+            }
+
+            $group->delete();
+        });
 
         return response()->json([
             'success' => true,
