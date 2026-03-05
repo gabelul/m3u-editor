@@ -375,7 +375,7 @@ class GroupController extends Controller
      *
      * For safety, only custom groups can be deleted through the API.
      * If channels exist, provide `target_group_id` to move channels first, or `force=true`
-     * to allow deleting the group and its channels.
+     * to allow deleting the group. Any group channels will be orphaned (without a group).
      */
     public function destroy(Request $request, int $id): JsonResponse
     {
