@@ -296,12 +296,8 @@ class EpgGenerateController extends Controller
 
                                 // Apply tvg_shift offset to programme times if set
                                 if ($tvgShift !== 0) {
-                                    $start = $this->formatXmltvDateTime(
-                                        Carbon::parse($programme['start'])->addHours($tvgShift)->toIso8601String()
-                                    );
-                                    $stop = $this->formatXmltvDateTime(
-                                        Carbon::parse($programme['stop'])->addHours($tvgShift)->toIso8601String()
-                                    );
+                                    $start = Carbon::parse($programme['start'])->addHours($tvgShift)->format('YmdHis O');
+                                    $stop = Carbon::parse($programme['stop'])->addHours($tvgShift)->format('YmdHis O');
                                 } else {
                                     $start = $this->formatXmltvDateTime($programme['start']);
                                     $stop = $this->formatXmltvDateTime($programme['stop']);
