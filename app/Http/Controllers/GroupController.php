@@ -175,7 +175,7 @@ class GroupController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $this->serializeGroup($group, includeNameInternal: false),
+            'data' => $this->serializeGroup($group),
         ]);
     }
 
@@ -237,7 +237,7 @@ class GroupController extends Controller
     /**
      * Update a group
      *
-     * Update editable group fields for the authenticated user.
+     * Update specific fields of a group. Only the provided fields will be updated. Updated values are stored in custom fields (e.g., `name_internal`).
      */
     public function update(Request $request, int $id): JsonResponse
     {
@@ -253,18 +253,14 @@ class GroupController extends Controller
         }
 
         $validated = $request->validate([
-            'name' => 'sometimes|string|max:255',
-            'name_internal' => 'sometimes|nullable|string|max:255',
+            'name' => 'sometimes|nullable|string|max:255',
             'sort_order' => 'sometimes|numeric|min:0',
             'enabled' => 'sometimes|boolean',
             'type' => 'sometimes|string|in:live,vod',
         ]);
 
         if (array_key_exists('name', $validated)) {
-            $group->name = $validated['name'];
-        }
-        if (array_key_exists('name_internal', $validated)) {
-            $group->name_internal = $validated['name_internal'];
+            $group->name_internal = $validated['name'];
         }
         if (array_key_exists('sort_order', $validated)) {
             $group->sort_order = $validated['sort_order'];
@@ -529,11 +525,11 @@ class GroupController extends Controller
             ->loadCount($this->groupCountRelations());
     }
 
-    private function serializeGroup(Group $group, bool $includeNameInternal = true): array
+    private function serializeGroup(Group $group): array
     {
         $data = [
             'id' => $group->id,
-            'name' => $group->name,
+            'name' => $group->name_internal ?? $group->name,
             'sort_order' => $group->sort_order,
             'type' => $group->type ?? 'live',
             'enabled' => (bool) $group->enabled,
@@ -548,10 +544,6 @@ class GroupController extends Controller
                 'uuid' => $group->playlist->uuid,
             ] : null,
         ];
-
-        if ($includeNameInternal) {
-            $data['name_internal'] = $group->name_internal;
-        }
 
         return $data;
     }
