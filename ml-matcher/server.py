@@ -183,6 +183,25 @@ def normalize_name(name: str) -> str:
     return ' '.join(tokens).strip()
 
 
+def _first_string(mapping: dict, *keys: str) -> str:
+    """
+    Return the first string value found for the given keys.
+
+    Nested request validation already ensures top-level arrays contain dicts,
+    but individual fields may still be null or non-strings. Returning an empty
+    string here keeps matching logic defensive and avoids type errors.
+
+    @param mapping - Input dict to inspect
+    @param keys - Keys to try in order
+    @returns First string value, or empty string if none are strings
+    """
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Character N-gram TF-IDF Engine
 #
@@ -442,7 +461,7 @@ def match_channel(
     # Normalize all candidates
     candidates_with_norm = []
     for c in epg_candidates:
-        norm = normalize_name(c.get('name', '') or c.get('channel_id', ''))
+        norm = normalize_name(_first_string(c, 'name', 'channel_id'))
         if norm:
             candidates_with_norm.append({**c, '_norm': norm})
 
@@ -526,7 +545,7 @@ def match_batch(
     # Pre-normalize all EPG candidates
     norm_candidates = []
     for c in epg_candidates:
-        norm = normalize_name(c.get('name', '') or c.get('channel_id', ''))
+        norm = normalize_name(_first_string(c, 'name', 'channel_id'))
         if norm:
             norm_candidates.append({**c, '_norm': norm})
 
@@ -547,7 +566,7 @@ def match_batch(
 
     results = []
     for ch in channels:
-        ch_name = ch.get('name', '')
+        ch_name = _first_string(ch, 'name')
         norm_ch = normalize_name(ch_name)
         if not norm_ch or len(norm_ch) < 2:
             continue
