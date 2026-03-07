@@ -115,7 +115,12 @@ class SimilaritySearchService
         $title = $this->sanitizeUtf8($channel->title_custom ?? $channel->title);
         $name = $this->sanitizeUtf8($channel->name_custom ?? $channel->name);
         $fallbackName = trim($title ?: $name);
-        $normalizedChan = $this->normalizeChannelName($fallbackName);
+
+        // Prefer the pre-computed normalized title (from import pipeline) when available.
+        // Falls back to runtime normalization for channels imported before this feature.
+        $normalizedChan = $channel->title_normalized
+            ? $this->sanitizeUtf8($channel->title_normalized)
+            : $this->normalizeChannelName($fallbackName);
 
         if (! $normalizedChan || strlen($normalizedChan) < $this->minChannelLength) {
             if ($debug) {
