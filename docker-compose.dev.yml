@@ -1,0 +1,70 @@
+##
+# Local development compose file — builds from source instead of pulling
+# the upstream image. Use for testing fork enhancements before pushing.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml down -v  (clean teardown)
+##
+services:
+  m3u-editor-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: m3u-editor-dev
+    environment:
+      # Timezone
+      - TZ=Etc/UTC
+
+      # Application URL
+      - APP_URL=http://localhost
+      - APP_PORT=36450
+
+      # Postgres Configuration (embedded)
+      - ENABLE_POSTGRES=true
+      - PG_DATABASE=m3ue_dev
+      - PG_USER=m3ue
+      - PG_PASSWORD=devpass
+
+      # Database Connection
+      - DB_CONNECTION=pgsql
+      - DB_HOST=localhost
+      - DB_PORT=5432
+      - DB_DATABASE=m3ue_dev
+      - DB_USERNAME=m3ue
+      - DB_PASSWORD=devpass
+
+      # Redis (embedded)
+      - REDIS_ENABLED=true
+      - REDIS_SERVER_PORT=36791
+      - REDIS_HOST=localhost
+      - REDIS_PASSWORD=devpass
+
+      # M3U Proxy (embedded)
+      - M3U_PROXY_ENABLED=true
+      - M3U_PROXY_PORT=38086
+      - M3U_PROXY_HOST=localhost
+      - M3U_PROXY_TOKEN=devpass
+
+      # ML Matcher (our new service)
+      - ML_MATCHER_ENABLED=true
+    volumes:
+      # Persistent config data (Docker-managed volume — avoids ExFAT fd limits)
+      - configdata_dev:/var/www/config
+
+      # PostgreSQL data
+      - pgdata_dev:/var/lib/postgresql/data
+    restart: unless-stopped
+    ports:
+      - "36450:36450"  # App (offset from production 36400)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:36450/up"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Longer start period — first build downloads ML model
+volumes:
+  pgdata_dev:
+    driver: local
+  configdata_dev:
+    driver: local
