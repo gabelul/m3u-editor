@@ -12,27 +12,20 @@
 
 set -e
 
-DEPS_DIR="/var/www/config/ml-matcher-deps"
-MARKER="${DEPS_DIR}/.installed"
-REQUIREMENTS="/opt/ml-matcher/requirements.txt"
-MODEL_CACHE="${DEPS_DIR}/models"
+MARKER="/var/www/config/.ml-matcher-installed"
+MODEL_CACHE="/var/www/config/ml-matcher-models"
 SCRIPT="/opt/ml-matcher/server.py"
 
-# Create deps directory if it doesn't exist
-mkdir -p "${DEPS_DIR}"
-
 # Install dependencies if not already done
+# Installs to system Python (not --target) to avoid cross-device link issues
+# when /var/www/config is on a different filesystem (volume mount)
 if [ ! -f "${MARKER}" ]; then
-    echo "[ml-matcher] First run — installing Python dependencies to ${DEPS_DIR}..."
-    echo "[ml-matcher] This may take 5-10 minutes on first run. Subsequent starts will be fast."
+    echo "[ml-matcher] First run — installing Python dependencies..."
+    echo "[ml-matcher] This may take 3-5 minutes. Subsequent starts will be instant."
 
-    # Install with pip to the persistent directory
-    # Uses transformers + torch directly (no sentence-transformers/scikit-learn
-    # which require compilation from source on Alpine's musl libc)
     pip3 install \
         --no-cache-dir \
         --break-system-packages \
-        --target="${DEPS_DIR}" \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         torch "transformers>=4.41.0" flask "rapidfuzz>=3.6.0" "numpy>=1.26.0" \
         2>&1
@@ -46,9 +39,9 @@ if [ ! -f "${MARKER}" ]; then
         exit 1
     fi
 
-    # Pre-download the ML model (tokenizer + weights)
+    # Pre-download the ML model (tokenizer + weights) to persistent volume
+    mkdir -p "${MODEL_CACHE}"
     echo "[ml-matcher] Downloading ML model (all-MiniLM-L6-v2)..."
-    PYTHONPATH="${DEPS_DIR}:${PYTHONPATH}" \
     HF_HOME="${MODEL_CACHE}" \
     python3 -c "from transformers import AutoTokenizer, AutoModel; AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2'); AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')" \
         2>&1 || echo "[ml-matcher] WARNING: Model pre-download failed. Will download on first request."
@@ -56,8 +49,7 @@ else
     echo "[ml-matcher] Dependencies already installed ($(cat ${MARKER})). Starting server..."
 fi
 
-# Set up paths and start the server
-export PYTHONPATH="${DEPS_DIR}:${PYTHONPATH}"
+# Point HuggingFace cache to persistent volume so model survives container recreations
 export HF_HOME="${MODEL_CACHE}"
 
 exec python3 "${SCRIPT}"
