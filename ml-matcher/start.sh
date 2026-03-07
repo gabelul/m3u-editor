@@ -2,54 +2,49 @@
 ##
 # Self-bootstrapping startup script for the ML Matcher service.
 #
-# Installs Python dependencies on first run into a persistent directory
-# (/var/www/config/ml-matcher-deps). This avoids baking heavy ML libs
-# (~800MB PyTorch + sentence-transformers) into the Docker image.
+# Installs Python dependencies on first run into system Python.
+# Lightweight: only Flask + RapidFuzz + NumPy (~20MB total).
+# No PyTorch/ONNX Runtime needed — uses character n-gram TF-IDF.
 #
 # On subsequent starts, skips install if deps already exist.
-# Also downloads the ML model on first run (~90MB).
+# Handles image rebuilds: marker lives on persistent volume but packages
+# live in the container filesystem, so we verify importability too.
 ##
 
 set -e
 
 MARKER="/var/www/config/.ml-matcher-installed"
-MODEL_CACHE="/var/www/config/ml-matcher-models"
 SCRIPT="/opt/ml-matcher/server.py"
+REQUIREMENTS="/opt/ml-matcher/requirements.txt"
 
-# Install dependencies if not already done
-# Installs to system Python (not --target) to avoid cross-device link issues
-# when /var/www/config is on a different filesystem (volume mount)
-if [ ! -f "${MARKER}" ]; then
-    echo "[ml-matcher] First run — installing Python dependencies..."
-    echo "[ml-matcher] This may take 3-5 minutes. Subsequent starts will be instant."
+# Check if deps are actually importable (not just marker present).
+# The marker lives on persistent volume but packages are in the container
+# filesystem — after an image rebuild the marker survives but packages don't.
+needs_install() {
+    if [ ! -f "${MARKER}" ]; then
+        return 0  # No marker = definitely needs install
+    fi
+    # Marker exists, but verify packages are actually importable
+    if ! python3 -c "import flask, rapidfuzz" 2>/dev/null; then
+        echo "[ml-matcher] Marker exists but packages missing (image rebuilt?). Reinstalling..."
+        return 0
+    fi
+    return 1  # Marker exists and packages work
+}
+
+if needs_install; then
+    echo "[ml-matcher] Installing Python dependencies..."
+    echo "[ml-matcher] This should take under 30 seconds."
 
     pip3 install \
         --no-cache-dir \
         --break-system-packages \
-        --extra-index-url https://download.pytorch.org/whl/cpu \
-        torch "transformers>=4.41.0" flask "rapidfuzz>=3.6.0" "numpy>=1.26.0" \
-        2>&1
+        -r "${REQUIREMENTS}"
 
-    if [ $? -eq 0 ]; then
-        echo "[ml-matcher] Dependencies installed successfully."
-        date > "${MARKER}"
-    else
-        echo "[ml-matcher] ERROR: Failed to install dependencies. ML matching will be unavailable."
-        echo "[ml-matcher] The service will retry on next container restart."
-        exit 1
-    fi
-
-    # Pre-download the ML model (tokenizer + weights) to persistent volume
-    mkdir -p "${MODEL_CACHE}"
-    echo "[ml-matcher] Downloading ML model (all-MiniLM-L6-v2)..."
-    HF_HOME="${MODEL_CACHE}" \
-    python3 -c "from transformers import AutoTokenizer, AutoModel; AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2'); AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')" \
-        2>&1 || echo "[ml-matcher] WARNING: Model pre-download failed. Will download on first request."
+    echo "[ml-matcher] Dependencies installed successfully."
+    date > "${MARKER}"
 else
-    echo "[ml-matcher] Dependencies already installed ($(cat ${MARKER})). Starting server..."
+    echo "[ml-matcher] Dependencies verified ($(cat ${MARKER})). Starting server..."
 fi
-
-# Point HuggingFace cache to persistent volume so model survives container recreations
-export HF_HOME="${MODEL_CACHE}"
 
 exec python3 "${SCRIPT}"
