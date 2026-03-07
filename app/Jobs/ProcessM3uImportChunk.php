@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\Channel;
 use App\Models\Job;
 use App\Models\Playlist;
+use App\Services\ChannelTitleNormalizerService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
@@ -49,11 +50,18 @@ class ProcessM3uImportChunk implements ShouldQueue
             // Add the channel for insert/update
             $groupId = $job->variables['groupId'];
             $groupName = $job->variables['groupName'];
+            $normalizer = app(ChannelTitleNormalizerService::class);
             foreach ($job->payload as $channel) {
                 // Make sure name is set
                 if (! isset($channel['name'])) {
                     continue;
                 }
+
+                // Generate a normalized title for better EPG matching
+                // Uses the provider title (or name as fallback) and strips
+                // prefixes, quality suffixes, unicode junk, etc.
+                $titleForNormalization = $channel['title'] ?? $channel['name'];
+                $channel['title_normalized'] = $normalizer->normalize($titleForNormalization);
 
                 // Add the channel for insert/update
                 $bulk[] = [
@@ -88,6 +96,7 @@ class ProcessM3uImportChunk implements ShouldQueue
                 // ...only update the following fields
                 'url',
                 'title', // provider title, update this if it changes
+                'title_normalized', // cleaned title for EPG matching (auto-generated)
                 'name', // provider name, update this if it changes
                 'stream_id', // provider stream ID or tvg-id, update this if it changes (for Xtream API this could be `epg_channel_id`)
                 'logo_internal', // provider logo path fallback
