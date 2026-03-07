@@ -27,12 +27,14 @@ if [ ! -f "${MARKER}" ]; then
     echo "[ml-matcher] This may take 5-10 minutes on first run. Subsequent starts will be fast."
 
     # Install with pip to the persistent directory
+    # Uses transformers + torch directly (no sentence-transformers/scikit-learn
+    # which require compilation from source on Alpine's musl libc)
     pip3 install \
         --no-cache-dir \
         --break-system-packages \
         --target="${DEPS_DIR}" \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        torch flask "sentence-transformers>=3.0.0" "rapidfuzz>=3.6.0" "numpy>=1.26.0" \
+        torch "transformers>=4.41.0" flask "rapidfuzz>=3.6.0" "numpy>=1.26.0" \
         2>&1
 
     if [ $? -eq 0 ]; then
@@ -44,11 +46,11 @@ if [ ! -f "${MARKER}" ]; then
         exit 1
     fi
 
-    # Pre-download the ML model
+    # Pre-download the ML model (tokenizer + weights)
     echo "[ml-matcher] Downloading ML model (all-MiniLM-L6-v2)..."
     PYTHONPATH="${DEPS_DIR}:${PYTHONPATH}" \
     HF_HOME="${MODEL_CACHE}" \
-    python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
+    python3 -c "from transformers import AutoTokenizer, AutoModel; AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2'); AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')" \
         2>&1 || echo "[ml-matcher] WARNING: Model pre-download failed. Will download on first request."
 else
     echo "[ml-matcher] Dependencies already installed ($(cat ${MARKER})). Starting server..."

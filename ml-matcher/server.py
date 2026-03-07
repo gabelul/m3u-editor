@@ -179,7 +179,13 @@ def token_sort_key(name: str) -> str:
 
 def _load_model():
     """
-    Lazy-load the sentence-transformers model.
+    Lazy-load the transformer model and tokenizer.
+
+    Uses transformers + torch directly instead of sentence-transformers to avoid
+    the scikit-learn dependency (which can't compile on Alpine/musl without
+    heavy build tools). We replicate sentence-transformers' mean pooling logic
+    ourselves — it's just a few lines.
+
     Only called on first matching request. ~80MB RAM, ~2s load time.
     """
     global _model
@@ -190,8 +196,11 @@ def _load_model():
     start = time.time()
 
     try:
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(MODEL_NAME)
+        from transformers import AutoTokenizer, AutoModel
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        model = AutoModel.from_pretrained(MODEL_NAME)
+        model.eval()  # Set to inference mode (disables dropout etc.)
+        _model = (tokenizer, model)
         elapsed = time.time() - start
         logger.info(f"Model loaded in {elapsed:.1f}s")
     except Exception as e:
@@ -203,19 +212,48 @@ def _load_model():
 
 def compute_embeddings(texts: list[str]):
     """
-    Compute sentence embeddings for a list of texts.
+    Compute sentence embeddings for a list of texts using mean pooling.
+
+    Replicates sentence-transformers' encode() behavior:
+    1. Tokenize input texts
+    2. Pass through transformer model
+    3. Mean-pool token embeddings (weighted by attention mask)
+    4. L2-normalize for cosine similarity via dot product
 
     @param texts - List of normalized channel names
-    @returns numpy array of embeddings, or None if model unavailable
+    @returns numpy array of L2-normalized embeddings, or None if model unavailable
     """
-    model = _load_model()
-    if model is None:
+    loaded = _load_model()
+    if loaded is None:
         return None
 
+    import torch
     import numpy as np
-    embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
 
-    # Normalize for cosine similarity (dot product of normalized vectors = cosine sim)
+    tokenizer, model = loaded
+
+    # Tokenize all texts at once with padding and truncation
+    encoded = tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=128,
+        return_tensors='pt',
+    )
+
+    # Run through the transformer (no gradient computation needed for inference)
+    with torch.no_grad():
+        output = model(**encoded)
+
+    # Mean pooling: average token embeddings, weighted by attention mask
+    # This ignores padding tokens, giving a single vector per input text
+    token_embeddings = output.last_hidden_state  # (batch, seq_len, hidden_dim)
+    attention_mask = encoded['attention_mask'].unsqueeze(-1)  # (batch, seq_len, 1)
+    sum_embeddings = (token_embeddings * attention_mask).sum(dim=1)
+    sum_mask = attention_mask.sum(dim=1).clamp(min=1e-9)
+    embeddings = (sum_embeddings / sum_mask).numpy()
+
+    # L2-normalize so dot product = cosine similarity
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1  # Avoid division by zero
     return embeddings / norms
