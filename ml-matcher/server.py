@@ -76,6 +76,13 @@ logger = logging.getLogger("ml-matcher")
 
 app = Flask(__name__)
 
+# Cap request body size at 10MB to prevent memory exhaustion before
+# we even get to the per-field input caps in the endpoint handlers
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
+
+# Max names for the /normalize debug endpoint
+MAX_NORMALIZE_NAMES = 1_000
+
 
 # ---------------------------------------------------------------------------
 # Name Normalization Pipeline
@@ -227,8 +234,10 @@ class NgramTfidfMatcher:
     The IDF weighting is key: common n-grams like "ch" or "an" (from "channel")
     get low weight, while distinctive n-grams like "cnn" or "bbc" get high weight.
 
-    Uses sparse representation (dict-of-dicts) internally, only converting to
-    dense numpy arrays for the final cosine computation in small chunks.
+    Uses sparse representation (dict per text) internally. Python dict overhead
+    is higher than raw floats (~100 bytes per entry vs 8), but still orders of
+    magnitude better than a dense matrix at scale (e.g., 50k candidates with
+    ~50 non-zero entries each ≈ 250MB vs 7.5GB dense).
     """
 
     def __init__(self, ngram_range: tuple = NGRAM_RANGE):
@@ -379,7 +388,7 @@ def _compute_fuzzy_score(norm_a: str, norm_b: str) -> float:
     Compute the best fuzzy score between two normalized names.
 
     Uses token_sort_ratio as the primary score (handles word reordering).
-    partial_ratio is used as a secondary signal but gated by a 60% length
+    partial_ratio is used as a secondary signal but gated by a 75% length
     ratio to prevent false positives between sibling channels like
     "HBO Max" and "HBO 2" (following Stream-Mapparr's approach).
 
@@ -595,6 +604,46 @@ def match_batch(
 
 
 # ---------------------------------------------------------------------------
+# Request Validation
+# ---------------------------------------------------------------------------
+
+def _validate_string(value, field_name: str, max_length: int = 500) -> tuple[Optional[str], Optional[str]]:
+    """
+    Validate and sanitize a string field from request JSON.
+
+    @param value - Raw value from JSON
+    @param field_name - Field name for error messages
+    @param max_length - Maximum allowed string length
+    @returns Tuple of (sanitized_string, error_message). Error is None if valid.
+    """
+    if value is None:
+        return '', None
+    if not isinstance(value, str):
+        return None, f'{field_name} must be a string'
+    if len(value) > max_length:
+        return None, f'{field_name} exceeds max length ({max_length})'
+    return value, None
+
+
+def _validate_list(value, field_name: str, max_items: int) -> tuple[Optional[list], Optional[str]]:
+    """
+    Validate a list field from request JSON.
+
+    @param value - Raw value from JSON
+    @param field_name - Field name for error messages
+    @param max_items - Maximum allowed list length
+    @returns Tuple of (list, error_message). Error is None if valid.
+    """
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return None, f'{field_name} must be an array'
+    if len(value) > max_items:
+        return None, f'{field_name} exceeds max items ({max_items})'
+    return value, None
+
+
+# ---------------------------------------------------------------------------
 # Flask Endpoints
 # ---------------------------------------------------------------------------
 
@@ -629,18 +678,17 @@ def match_single():
 
     @returns Match result or null
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'JSON body required'}), 400
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({'error': 'JSON object body required'}), 400
 
-    channel_name = data.get('channel_name', '')
-    epg_candidates = data.get('epg_candidates', [])
+    channel_name, err = _validate_string(data.get('channel_name'), 'channel_name')
+    if err:
+        return jsonify({'error': err}), 400
 
-    # Input cap — prevent memory exhaustion from oversized payloads
-    if len(epg_candidates) > MAX_CANDIDATES:
-        return jsonify({
-            'error': f'Too many candidates (max {MAX_CANDIDATES})',
-        }), 413
+    epg_candidates, err = _validate_list(data.get('epg_candidates'), 'epg_candidates', MAX_CANDIDATES)
+    if err:
+        return jsonify({'error': err}), 413 if 'max' in err else 400
 
     ngram_threshold = data.get('ngram_threshold', data.get('ml_threshold', DEFAULT_NGRAM_THRESHOLD))
     fuzzy_threshold = data.get('fuzzy_threshold', DEFAULT_FUZZY_THRESHOLD)
@@ -673,22 +721,17 @@ def match_batch_endpoint():
 
     @returns List of matched results (unmatched channels not included)
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'JSON body required'}), 400
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({'error': 'JSON object body required'}), 400
 
-    channels = data.get('channels', [])
-    epg_candidates = data.get('epg_candidates', [])
+    channels, err = _validate_list(data.get('channels'), 'channels', MAX_CHANNELS)
+    if err:
+        return jsonify({'error': err}), 413 if 'max' in err else 400
 
-    # Input caps — prevent memory exhaustion from oversized payloads
-    if len(epg_candidates) > MAX_CANDIDATES:
-        return jsonify({
-            'error': f'Too many candidates (max {MAX_CANDIDATES})',
-        }), 413
-    if len(channels) > MAX_CHANNELS:
-        return jsonify({
-            'error': f'Too many channels (max {MAX_CHANNELS})',
-        }), 413
+    epg_candidates, err = _validate_list(data.get('epg_candidates'), 'epg_candidates', MAX_CANDIDATES)
+    if err:
+        return jsonify({'error': err}), 413 if 'max' in err else 400
 
     conservative = data.get('conservative', True)
     use_ngram = data.get('use_ngram', data.get('use_ml', True))
@@ -723,12 +766,15 @@ def normalize_endpoint():
     POST body: {"names": ["GO: CNN INT RAW", "IT| RAI 1 UHD"]}
     @returns List of normalized names
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'JSON body required'}), 400
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({'error': 'JSON object body required'}), 400
 
-    names = data.get('names', [])
-    results = [{'original': n, 'normalized': normalize_name(n)} for n in names]
+    names, err = _validate_list(data.get('names'), 'names', MAX_NORMALIZE_NAMES)
+    if err:
+        return jsonify({'error': err}), 413 if 'max' in err else 400
+
+    results = [{'original': n, 'normalized': normalize_name(str(n))} for n in names]
 
     return jsonify({'results': results})
 
