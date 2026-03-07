@@ -1,5 +1,6 @@
 # Lightweight ML matcher dependencies — no PyTorch/ONNX needed
 # All packages have pre-built wheels for Alpine Linux (musl + aarch64)
-flask>=3.0.0
-rapidfuzz>=3.6.0
-numpy>=1.26.0
+# Upper-bounded to prevent breaking changes on fresh installs
+flask>=3.0.0,<4.0.0
+rapidfuzz>=3.6.0,<4.0.0
+numpy>=1.26.0,<3.0.0

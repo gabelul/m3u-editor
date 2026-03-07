@@ -625,14 +625,15 @@ def _validate_string(value, field_name: str, max_length: int = 500) -> tuple[Opt
     return value, None
 
 
-def _validate_list(value, field_name: str, max_items: int) -> tuple[Optional[list], Optional[str]]:
+def _validate_list(value, field_name: str, max_items: int, element_type: type = None) -> tuple[Optional[list], Optional[str]]:
     """
     Validate a list field from request JSON.
 
     @param value - Raw value from JSON
     @param field_name - Field name for error messages
     @param max_items - Maximum allowed list length
-    @returns Tuple of (list, error_message). Error is None if valid.
+    @param element_type - If set, each element must be this type (non-matching elements are silently dropped)
+    @returns Tuple of (filtered_list, error_message). Error is None if valid.
     """
     if value is None:
         return [], None
@@ -640,7 +641,24 @@ def _validate_list(value, field_name: str, max_items: int) -> tuple[Optional[lis
         return None, f'{field_name} must be an array'
     if len(value) > max_items:
         return None, f'{field_name} exceeds max items ({max_items})'
+    # Filter out non-matching elements (null, wrong type) instead of 500ing
+    if element_type is not None:
+        value = [item for item in value if isinstance(item, element_type)]
     return value, None
+
+
+def _coerce_float(value, default: float) -> float:
+    """Safely coerce a JSON value to float, returning default on failure."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _coerce_bool(value, default: bool) -> bool:
+    """Safely coerce a JSON value to bool. Only actual booleans count — strings like 'false' don't."""
+    if isinstance(value, bool):
+        return value
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -649,9 +667,12 @@ def _validate_list(value, field_name: str, max_items: int) -> tuple[Optional[lis
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint. Returns engine status."""
+    """Health check endpoint. Returns engine status and readiness."""
+    # Service is degraded if numpy is missing (n-gram TF-IDF fallback won't work)
+    ready = _rapidfuzz_available and _numpy_available
+    status = 'ok' if ready else 'degraded'
     return jsonify({
-        'status': 'ok',
+        'status': status,
         'engine': 'ngram_tfidf',
         'ngram_range': list(NGRAM_RANGE),
         'rapidfuzz_available': _rapidfuzz_available,
@@ -686,13 +707,13 @@ def match_single():
     if err:
         return jsonify({'error': err}), 400
 
-    epg_candidates, err = _validate_list(data.get('epg_candidates'), 'epg_candidates', MAX_CANDIDATES)
+    epg_candidates, err = _validate_list(data.get('epg_candidates'), 'epg_candidates', MAX_CANDIDATES, dict)
     if err:
         return jsonify({'error': err}), 413 if 'max' in err else 400
 
-    ngram_threshold = data.get('ngram_threshold', data.get('ml_threshold', DEFAULT_NGRAM_THRESHOLD))
-    fuzzy_threshold = data.get('fuzzy_threshold', DEFAULT_FUZZY_THRESHOLD)
-    use_ngram = data.get('use_ngram', data.get('use_ml', True))
+    ngram_threshold = _coerce_float(data.get('ngram_threshold', data.get('ml_threshold')), DEFAULT_NGRAM_THRESHOLD)
+    fuzzy_threshold = _coerce_float(data.get('fuzzy_threshold'), DEFAULT_FUZZY_THRESHOLD)
+    use_ngram = _coerce_bool(data.get('use_ngram', data.get('use_ml')), True)
 
     result = match_channel(channel_name, epg_candidates, ngram_threshold, fuzzy_threshold, use_ngram)
 
@@ -725,16 +746,16 @@ def match_batch_endpoint():
     if not data or not isinstance(data, dict):
         return jsonify({'error': 'JSON object body required'}), 400
 
-    channels, err = _validate_list(data.get('channels'), 'channels', MAX_CHANNELS)
+    channels, err = _validate_list(data.get('channels'), 'channels', MAX_CHANNELS, dict)
     if err:
         return jsonify({'error': err}), 413 if 'max' in err else 400
 
-    epg_candidates, err = _validate_list(data.get('epg_candidates'), 'epg_candidates', MAX_CANDIDATES)
+    epg_candidates, err = _validate_list(data.get('epg_candidates'), 'epg_candidates', MAX_CANDIDATES, dict)
     if err:
         return jsonify({'error': err}), 413 if 'max' in err else 400
 
-    conservative = data.get('conservative', True)
-    use_ngram = data.get('use_ngram', data.get('use_ml', True))
+    conservative = _coerce_bool(data.get('conservative'), True)
+    use_ngram = _coerce_bool(data.get('use_ngram', data.get('use_ml')), True)
 
     start = time.time()
     results = match_batch(channels, epg_candidates, conservative, use_ngram)
