@@ -35,4 +35,19 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | ML Matcher Service (Semantic EPG Matching)
+    |--------------------------------------------------------------------------
+    |
+    | AI-powered channel name matching using sentence-transformers.
+    | Runs as a Python microservice inside the container on port 5599.
+    | Used as fallback when Levenshtein/cosine matching fails.
+    |
+    */
+    'ml_matcher' => [
+        'enabled' => env('ML_MATCHER_ENABLED', true),
+        'url' => env('ML_MATCHER_URL', 'http://127.0.0.1:5599'),
+    ],
+
 ];

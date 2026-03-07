@@ -30,6 +30,11 @@ export PG_PORT="${PG_PORT:-5432}" # Default 5432
 # When enabled, supervisor runs `php artisan network:broadcast` continuously
 export NETWORK_BROADCAST_ENABLED="${NETWORK_BROADCAST_ENABLED:-false}"
 
+# ML Matcher configuration
+# Semantic EPG matching using sentence-transformers (AI-powered)
+# Runs on localhost:5599, used as fallback when fuzzy matching fails
+export ML_MATCHER_ENABLED="${ML_MATCHER_ENABLED:-true}"
+
 # M3U Proxy configuration
 # If M3U_PROXY_ENABLED=true, enable embedded proxy
 # If M3U_PROXY_ENABLED=false/unset, disable embedded proxy

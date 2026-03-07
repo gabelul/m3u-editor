@@ -223,6 +223,17 @@ RUN if [ -f /opt/m3u-proxy/requirements.txt ]; then \
         pip3 install --no-cache-dir --break-system-packages -r /opt/m3u-proxy/requirements.txt; \
     fi
 
+# Install ML Matcher dependencies (sentence-transformers for semantic EPG matching)
+# This adds ~400MB to the image but enables AI-powered channel matching
+COPY ml-matcher/requirements.txt /opt/ml-matcher/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /opt/ml-matcher/requirements.txt
+
+# Pre-download the ML model during build so first request is fast
+RUN python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" || true
+
+# Copy ML Matcher service
+COPY --chown=${WWWUSER}:${WWWGROUP} ml-matcher/ /opt/ml-matcher/
+
 # Copy application code (changes more frequently)
 COPY --chown=${WWWUSER}:${WWWGROUP} . /var/www/html
 

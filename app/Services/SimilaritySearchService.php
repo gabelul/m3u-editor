@@ -321,6 +321,21 @@ class SimilaritySearchService
             }
         }
 
+        // ** Step 3: ML Semantic Matching (sentence-transformers fallback) **
+        // When Levenshtein and cosine both fail, try AI-powered semantic matching.
+        // This catches abbreviations like "CNN INT" -> "CNN International" that
+        // string-based algorithms miss. Requires the ml-matcher service on port 5599.
+        if (config('services.ml_matcher.enabled', true)) {
+            $mlMatch = $this->findMatchViaMl($normalizedChan, $epg, $debug);
+            if ($mlMatch) {
+                if ($debug) {
+                    Log::debug("Channel {$channel->id} '{$fallbackName}' matched via ML semantic similarity with channel_id={$mlMatch->channel_id}");
+                }
+
+                return $mlMatch;
+            }
+        }
+
         // If we have candidates, log why we didn't match
         if ($debug && ! empty($candidates)) {
             $topCandidate = $candidates[0];
@@ -412,6 +427,75 @@ class SimilaritySearchService
         }
 
         return $dotProduct / (sqrt($magA) * sqrt($magB));
+    }
+
+    /**
+     * Try ML-based semantic matching via the ml-matcher microservice.
+     *
+     * Sends the channel name + a batch of EPG candidates to the Python
+     * sentence-transformers service. Used as a last resort when string-based
+     * matching fails. Catches semantic equivalences like "CNN INT" = "CNN International".
+     *
+     * @param  string  $normalizedName  The normalized channel name
+     * @param  Epg  $epg  The EPG source to match against
+     * @param  bool  $debug  Whether to log debug info
+     * @return  EpgChannel|null  The matched EPG channel or null
+     */
+    private function findMatchViaMl(string $normalizedName, Epg $epg, bool $debug = false): ?EpgChannel
+    {
+        $mlMatcherUrl = config('services.ml_matcher.url', 'http://127.0.0.1:5599');
+
+        // Fetch EPG candidates — limit to reasonable batch size for ML processing
+        $epgCandidates = $epg->channels()
+            ->select('id', 'channel_id', 'name', 'display_name')
+            ->limit(5000)
+            ->get();
+
+        if ($epgCandidates->isEmpty()) {
+            return null;
+        }
+
+        // Build candidates array for the ML service
+        $candidates = $epgCandidates->map(fn ($c) => [
+            'id' => $c->id,
+            'name' => $c->name ?? $c->display_name,
+            'channel_id' => $c->channel_id,
+        ])->values()->toArray();
+
+        try {
+            $response = \Illuminate\Support\Facades\Http::timeout(30)
+                ->post("{$mlMatcherUrl}/match", [
+                    'channel_name' => $normalizedName,
+                    'epg_candidates' => $candidates,
+                    'ml_threshold' => 0.65,
+                    'fuzzy_threshold' => 85,
+                    'use_ml' => true,
+                ]);
+
+            if (! $response->successful()) {
+                if ($debug) {
+                    Log::debug("ML matcher returned HTTP {$response->status()} for '{$normalizedName}'");
+                }
+
+                return null;
+            }
+
+            $match = $response->json('match');
+            if (! $match || empty($match['id'])) {
+                return null;
+            }
+
+            // Look up the actual EpgChannel model
+            return EpgChannel::find($match['id']);
+
+        } catch (\Exception $e) {
+            // ML matcher unavailable — fail silently, this is a fallback
+            if ($debug) {
+                Log::debug("ML matcher error for '{$normalizedName}': {$e->getMessage()}");
+            }
+
+            return null;
+        }
     }
 
     /**
