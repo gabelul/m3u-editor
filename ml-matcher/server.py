@@ -200,6 +200,16 @@ _COUNTRY_EXTRACT_PATTERNS = [
     re.compile(r'^([A-Z]{2})-[A-Z]+\|\s*', re.IGNORECASE),      # "UK-ITV| " → "UK"
 ]
 
+# Common non-country prefixes that can look like ISO codes in IPTV names.
+_COUNTRY_FALSE_POSITIVES = {'GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'VO', 'TY'}
+
+# Fallback patterns for extracting country hints from EPG channel_id values.
+# Examples: "CNNI.us", "WAGT-CD.us_locals1", "RaiUno.it".
+_CHANNEL_ID_COUNTRY_PATTERNS = [
+    re.compile(r'\.([A-Z]{2,3})(?:$|[_-])', re.IGNORECASE),
+    re.compile(r'(?:^|[._-])([A-Z]{2,3})$', re.IGNORECASE),
+]
+
 # Country bonus for same-country candidates during ranking.
 # Small enough not to override clearly better textual matches,
 # but enough to break ties between cross-country duplicates.
@@ -229,9 +239,34 @@ def extract_country(name: str) -> Optional[str]:
             code = m.group(1).upper()
             # Sanity check: skip common false positives that look like country codes
             # but are actually channel name prefixes (e.g., "GO: Bloomberg" → "GO")
-            if code in {'GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'VO', 'TY'}:
+            if code in _COUNTRY_FALSE_POSITIVES:
                 continue
             return code
+    return None
+
+
+def extract_country_from_candidate(candidate: dict) -> Optional[str]:
+    """
+    Extract country from an EPG candidate using both display name and channel_id.
+
+    Prefers explicit prefixes in the raw name, then falls back to common
+    channel_id suffix formats like ".us" or ".us_locals1".
+    """
+    raw_name = _first_string(candidate, 'name')
+    code = extract_country(raw_name)
+    if code:
+        return code
+
+    channel_id = _first_string(candidate, 'channel_id')
+    if not channel_id:
+        return None
+
+    for pattern in _CHANNEL_ID_COUNTRY_PATTERNS:
+        m = pattern.search(channel_id)
+        if m:
+            code = m.group(1).upper()
+            if code not in _COUNTRY_FALSE_POSITIVES:
+                return code
     return None
 
 
@@ -551,7 +586,7 @@ def match_channel(
             entry = {**c, '_norm': norm}
             # Extract country from original (un-normalized) name for country bonus
             if country_hint:
-                entry['_country'] = extract_country(raw_name)
+                entry['_country'] = extract_country_from_candidate(c)
             candidates_with_norm.append(entry)
 
     if not candidates_with_norm:
@@ -767,7 +802,7 @@ def match_batch(
             entry = {**c, '_norm': norm}
             # Only extract countries when at least one channel has a hint
             if any_country_hints:
-                entry['_country'] = extract_country(raw_name)
+                entry['_country'] = extract_country_from_candidate(c)
             norm_candidates.append(entry)
 
     if not norm_candidates:
