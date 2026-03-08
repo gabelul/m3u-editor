@@ -223,11 +223,13 @@ RUN if [ -f /opt/m3u-proxy/requirements.txt ]; then \
         pip3 install --no-cache-dir --break-system-packages -r /opt/m3u-proxy/requirements.txt; \
     fi
 
-# Copy ML Matcher service (deps installed at runtime via start.sh into persistent volume)
-# This avoids baking ~800MB of PyTorch/sentence-transformers into the image.
-# On first container start, ml-matcher/start.sh installs deps to /var/www/config/ml-matcher-deps
+# Copy ML Matcher service and install its lightweight Python dependencies at build time.
+# This keeps container startup fast and makes the dependency set part of the image.
 COPY --chown=${WWWUSER}:${WWWGROUP} ml-matcher/ /opt/ml-matcher/
-RUN chmod +x /opt/ml-matcher/start.sh
+RUN chmod +x /opt/ml-matcher/start.sh && \
+    if [ -f /opt/ml-matcher/requirements.txt ]; then \
+        pip3 install --no-cache-dir --break-system-packages -r /opt/ml-matcher/requirements.txt; \
+    fi
 
 # Copy application code (changes more frequently)
 COPY --chown=${WWWUSER}:${WWWGROUP} . /var/www/html
