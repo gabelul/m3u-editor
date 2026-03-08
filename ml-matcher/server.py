@@ -189,6 +189,52 @@ def normalize_name(name: str) -> str:
     return ' '.join(tokens).strip()
 
 
+# Compiled regex for extracting country codes from raw channel/EPG names.
+# Matches common IPTV provider prefix formats and returns the 2-3 letter code.
+_COUNTRY_EXTRACT_PATTERNS = [
+    re.compile(r'^([A-Z]{2,3})\s*[|:]\s*', re.IGNORECASE),     # "IT: ", "US| "
+    re.compile(r'^([A-Z]{2,3})\s*-\s+', re.IGNORECASE),         # "US - CNN"
+    re.compile(r'^\(([A-Z]{2,3})\)\s*', re.IGNORECASE),         # "(US) "
+    re.compile(r'\|([A-Z]{2,3})\|', re.IGNORECASE),             # "|FR|"
+    re.compile(r'┃([A-Z]{2,3})┃', re.IGNORECASE),               # "┃NL┃"
+    re.compile(r'^([A-Z]{2})-[A-Z]+\|\s*', re.IGNORECASE),      # "UK-ITV| " → "UK"
+]
+
+# Country bonus for same-country candidates during ranking.
+# Small enough not to override clearly better textual matches,
+# but enough to break ties between cross-country duplicates.
+COUNTRY_BONUS = 0.03
+
+# Maximum score gap from leader for country bonus to apply.
+# Candidates more than this far behind the best base score
+# won't be rescued by the country bonus alone.
+COUNTRY_BONUS_WINDOW = 0.08
+
+
+def extract_country(name: str) -> Optional[str]:
+    """
+    Extract a country/region code from a raw channel name prefix.
+
+    Detects common IPTV provider formatting patterns like "US: CNN",
+    "UK| Sky News", "┃NL┃ RTL4", etc.
+
+    @param name - Raw (un-normalized) channel or EPG name
+    @returns Uppercase 2-3 letter country code, or None if not found
+    """
+    if not name:
+        return None
+    for pattern in _COUNTRY_EXTRACT_PATTERNS:
+        m = pattern.search(name)
+        if m:
+            code = m.group(1).upper()
+            # Sanity check: skip common false positives that look like country codes
+            # but are actually channel name prefixes (e.g., "GO: Bloomberg" → "GO")
+            if code in {'GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'NO', 'VO', 'TY'}:
+                continue
+            return code
+    return None
+
+
 def _first_string(mapping: dict, *keys: str) -> str:
     """
     Return the first string value found for the given keys.
@@ -439,107 +485,199 @@ def _compute_fuzzy_score(norm_a: str, norm_b: str) -> float:
 # Matching Logic
 # ---------------------------------------------------------------------------
 
+def _pick_best_by_country(matches: list[dict], hint: Optional[str]) -> Optional[dict]:
+    """
+    From a list of equally-scored matches, prefer the same-country candidate.
+
+    Used in exact/substring stages where multiple candidates produce the same
+    normalized form. Without this, the first iteration-order match wins,
+    which is arbitrary and often wrong for cross-country duplicates.
+
+    @param matches - List of candidate dicts (must have '_country' key if hint is set)
+    @param hint - Uppercase 2-3 letter country code, or None
+    @returns Best candidate, or None if matches is empty
+    """
+    if not matches:
+        return None
+    if not hint or len(matches) == 1:
+        return matches[0]
+    # Prefer same-country match if available
+    for m in matches:
+        if m.get('_country') == hint:
+            return m
+    return matches[0]  # Fall back to first match
+
+
 def match_channel(
     channel_name: str,
     epg_candidates: list[dict],
     ngram_threshold: float = DEFAULT_NGRAM_THRESHOLD,
     fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD,
     use_ngram: bool = True,
+    country_hint: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Find the best EPG match for a channel name.
 
-    Two-stage matching:
-    1. RapidFuzz (token-sort + length-gated partial ratio)
-    2. TF-IDF character n-gram cosine similarity (catches abbreviations/variants)
+    Four-stage pipeline:
+    1. Exact match after normalization
+    2. Substring containment with 75% length gate
+    3. RapidFuzz (token-sort + length-gated partial ratio)
+    4. TF-IDF character n-gram cosine similarity (catches abbreviations/variants)
+
+    Country-aware ranking: when country_hint is provided, candidates from the
+    same country get a small scoring bonus (+0.03) in stages 3-4, but only if
+    they're already within 0.08 of the best base score. This breaks ties between
+    cross-country duplicates without overriding clearly better textual matches.
 
     @param channel_name - The channel name to match (will be normalized)
     @param epg_candidates - List of dicts with 'id', 'name', 'channel_id' keys
     @param ngram_threshold - Minimum TF-IDF cosine similarity (0-1)
     @param fuzzy_threshold - Minimum RapidFuzz score (0-100)
     @param use_ngram - Whether to try n-gram matching as fallback
+    @param country_hint - Optional 2-3 letter country code for same-country bonus
     @returns Best match dict with 'id', 'name', 'score', 'method' or None
     """
     norm_channel = normalize_name(channel_name)
     if not norm_channel or len(norm_channel) < 2:
         return None
 
-    # Normalize all candidates
+    # Normalize all candidates and extract their country codes for ranking
     candidates_with_norm = []
     for c in epg_candidates:
-        norm = normalize_name(_first_string(c, 'name', 'channel_id'))
+        raw_name = _first_string(c, 'name', 'channel_id')
+        norm = normalize_name(raw_name)
         if norm:
-            candidates_with_norm.append({**c, '_norm': norm})
+            entry = {**c, '_norm': norm}
+            # Extract country from original (un-normalized) name for country bonus
+            if country_hint:
+                entry['_country'] = extract_country(raw_name)
+            candidates_with_norm.append(entry)
 
     if not candidates_with_norm:
         return None
 
     # --- Stage 1: Exact match after normalization (cheapest check) ---
     # If normalized names are identical, it's a perfect match — no fuzzy needed.
-    # Also checks with whitespace/ampersand stripped for near-exact cases.
+    # When country_hint is set and multiple exact matches exist, prefer same-country.
     norm_collapsed = re.sub(r'[\s&]+', '', norm_channel)
+
+    # Collect all exact matches (full and collapsed) rather than returning first
+    exact_matches = []
+    collapsed_matches = []
     for c in candidates_with_norm:
         if c['_norm'] == norm_channel:
-            return {
-                'id': c.get('id'),
-                'name': c.get('name'),
-                'channel_id': c.get('channel_id'),
-                'score': 1.0,
-                'method': 'exact',
-            }
-        cand_collapsed = re.sub(r'[\s&]+', '', c['_norm'])
-        if cand_collapsed == norm_collapsed:
-            return {
-                'id': c.get('id'),
-                'name': c.get('name'),
-                'channel_id': c.get('channel_id'),
-                'score': 0.99,
-                'method': 'exact',
-            }
+            exact_matches.append(c)
+        else:
+            cand_collapsed = re.sub(r'[\s&]+', '', c['_norm'])
+            if cand_collapsed == norm_collapsed:
+                collapsed_matches.append(c)
+
+    best_exact = _pick_best_by_country(exact_matches, country_hint)
+    if best_exact:
+        result = {
+            'id': best_exact.get('id'),
+            'name': best_exact.get('name'),
+            'channel_id': best_exact.get('channel_id'),
+            'score': 1.0,
+            'method': 'exact',
+        }
+        if country_hint:
+            result['country_matched'] = best_exact.get('_country') == country_hint
+        return result
+
+    best_collapsed = _pick_best_by_country(collapsed_matches, country_hint)
+    if best_collapsed:
+        result = {
+            'id': best_collapsed.get('id'),
+            'name': best_collapsed.get('name'),
+            'channel_id': best_collapsed.get('channel_id'),
+            'score': 0.99,
+            'method': 'exact',
+        }
+        if country_hint:
+            result['country_matched'] = best_collapsed.get('_country') == country_hint
+        return result
 
     # --- Stage 2: Substring match with 75% length gate ---
     # Catches close-length containment cases without needing fuzzy scoring,
     # while blocking loose matches like "story" ↔ "history".
-    best_substr_match = None
+    # Collects all matches at the best ratio, then prefers same-country.
     best_substr_ratio = 0.0
+    substr_matches = []
     for c in candidates_with_norm:
         cn = c['_norm']
         if norm_channel in cn or cn in norm_channel:
             length_ratio = min(len(norm_channel), len(cn)) / max(len(norm_channel), len(cn), 1)
-            if length_ratio >= 0.75 and length_ratio > best_substr_ratio:
-                best_substr_ratio = length_ratio
-                best_substr_match = c
+            if length_ratio >= 0.75:
+                if length_ratio > best_substr_ratio:
+                    best_substr_ratio = length_ratio
+                    substr_matches = [c]
+                elif length_ratio == best_substr_ratio:
+                    substr_matches.append(c)
 
-    if best_substr_match and best_substr_ratio >= 0.75:
-        return {
+    if substr_matches and best_substr_ratio >= 0.75:
+        best_substr_match = _pick_best_by_country(substr_matches, country_hint)
+        result = {
             'id': best_substr_match.get('id'),
             'name': best_substr_match.get('name'),
             'channel_id': best_substr_match.get('channel_id'),
             'score': round(best_substr_ratio, 3),
             'method': 'substring',
         }
+        if country_hint:
+            result['country_matched'] = best_substr_match.get('_country') == country_hint
+        return result
 
     best_match = None
     best_score = 0
 
-    # --- Stage 3: RapidFuzz matching ---
+    # --- Stage 3: RapidFuzz matching (with optional country bonus) ---
     if _rapidfuzz_available:
+        # Collect all candidates with their base scores for country-aware ranking
+        scored = []
         for c in candidates_with_norm:
-            final_score = _compute_fuzzy_score(norm_channel, c['_norm'])
-            if final_score > best_score:
-                best_score = final_score
-                best_match = c
+            base_score = _compute_fuzzy_score(norm_channel, c['_norm']) / 100.0
+            scored.append((base_score, c))
 
-        if best_match and best_score >= fuzzy_threshold:
-            return {
+        if scored:
+            # Find the best base score across all candidates
+            best_base = max(s[0] for s in scored)
+
+            # Apply country bonus per Codex's spec:
+            # only for candidates within COUNTRY_BONUS_WINDOW of the leader
+            best_adjusted = 0
+            for base, c in scored:
+                adjusted = base
+                country_matched = False
+                if country_hint and c.get('_country') == country_hint:
+                    if best_base - base <= COUNTRY_BONUS_WINDOW:
+                        adjusted = base + COUNTRY_BONUS
+                        country_matched = True
+
+                if adjusted > best_adjusted:
+                    best_adjusted = adjusted
+                    best_match = c
+                    best_score = base  # Keep the original base score for reporting
+                    best_match['_country_matched'] = country_matched
+                    best_match['_country_bonus'] = COUNTRY_BONUS if country_matched else 0
+
+        if best_match and best_adjusted >= (fuzzy_threshold / 100.0):
+            result = {
                 'id': best_match.get('id'),
                 'name': best_match.get('name'),
                 'channel_id': best_match.get('channel_id'),
-                'score': round(best_score / 100, 3),
+                'score': round(best_adjusted, 3),
+                'base_score': round(best_score, 3),
                 'method': 'rapidfuzz',
             }
+            # Include country debug fields when hint was provided
+            if country_hint:
+                result['country_bonus'] = best_match.get('_country_bonus', 0)
+                result['country_matched'] = best_match.get('_country_matched', False)
+            return result
 
-    # --- Stage 4: TF-IDF Character N-gram Matching (fallback) ---
+    # --- Stage 4: TF-IDF Character N-gram Matching (fallback, with country bonus) ---
     # Fit on candidates only (not query) so query-specific n-grams
     # don't dilute IDF weights. This matches batch-mode behavior.
     if use_ngram and _numpy_available:
@@ -553,18 +691,38 @@ def match_channel(
             candidate_sparses = matcher.transform_sparse(candidate_texts)
             similarities = sparse_cosine_batch(query_sparse, candidate_sparses)
 
-            best_idx = max(range(len(similarities)), key=lambda i: similarities[i])
-            best_sim = similarities[best_idx]
+            # Apply country bonus to n-gram scores
+            best_base_sim = max(similarities) if similarities else 0
+            best_sim = 0
+            best_idx = 0
+            best_country_matched = False
+
+            for i, sim in enumerate(similarities):
+                adjusted = sim
+                cm = False
+                if country_hint and candidates_with_norm[i].get('_country') == country_hint:
+                    if best_base_sim - sim <= COUNTRY_BONUS_WINDOW:
+                        adjusted = sim + COUNTRY_BONUS
+                        cm = True
+                if adjusted > best_sim:
+                    best_sim = adjusted
+                    best_idx = i
+                    best_country_matched = cm
 
             if best_sim >= ngram_threshold:
                 c = candidates_with_norm[best_idx]
-                return {
+                result = {
                     'id': c.get('id'),
                     'name': c.get('name'),
                     'channel_id': c.get('channel_id'),
                     'score': round(best_sim, 3),
+                    'base_score': round(similarities[best_idx], 3),
                     'method': 'ngram_tfidf',
                 }
+                if country_hint:
+                    result['country_bonus'] = COUNTRY_BONUS if best_country_matched else 0
+                    result['country_matched'] = best_country_matched
+                return result
         except Exception as e:
             logger.error(f"N-gram matching error: {e}")
 
@@ -584,7 +742,11 @@ def match_batch(
     and reuses them across all channel queries. Uses sparse representation
     to stay memory-safe with large candidate sets.
 
-    @param channels - List of dicts with 'id' and 'name' keys
+    Each channel dict may include an optional 'country_hint' field (2-3 letter
+    country code). When present, same-country candidates get a small scoring
+    bonus in fuzzy/n-gram stages to break ties between cross-country duplicates.
+
+    @param channels - List of dicts with 'id', 'name', and optional 'country_hint' keys
     @param epg_candidates - List of dicts with 'id', 'name', 'channel_id' keys
     @param conservative - Use stricter thresholds (for bulk operations)
     @param use_ngram - Whether to use n-gram matching
@@ -593,12 +755,20 @@ def match_batch(
     ngram_threshold = DEFAULT_CONSERVATIVE_NGRAM if conservative else DEFAULT_NGRAM_THRESHOLD
     fuzzy_threshold = DEFAULT_CONSERVATIVE_FUZZY if conservative else DEFAULT_FUZZY_THRESHOLD
 
+    # Check if any channel has a country_hint — if so, pre-extract countries from EPG names
+    any_country_hints = any(ch.get('country_hint') for ch in channels)
+
     # Pre-normalize all EPG candidates
     norm_candidates = []
     for c in epg_candidates:
-        norm = normalize_name(_first_string(c, 'name', 'channel_id'))
+        raw_name = _first_string(c, 'name', 'channel_id')
+        norm = normalize_name(raw_name)
         if norm:
-            norm_candidates.append({**c, '_norm': norm})
+            entry = {**c, '_norm': norm}
+            # Only extract countries when at least one channel has a hint
+            if any_country_hints:
+                entry['_country'] = extract_country(raw_name)
+            norm_candidates.append(entry)
 
     if not norm_candidates:
         return []
@@ -628,103 +798,163 @@ def match_batch(
         matched = False
 
         # --- Stage 1: Exact match after normalization ---
+        # Collect all exact matches and prefer same-country when hint is set
+        country_hint = ch.get('country_hint', '').upper() if ch.get('country_hint') else None
         norm_ch_collapsed = re.sub(r'[\s&]+', '', norm_ch)
-        for c in norm_candidates:
-            if c['_norm'] == norm_ch:
-                results.append({
+
+        exact_hits = [c for c in norm_candidates if c['_norm'] == norm_ch]
+        if exact_hits:
+            pick = _pick_best_by_country(exact_hits, country_hint) if country_hint else exact_hits[0]
+            entry = {
+                'channel_id': ch.get('id'),
+                'channel_name': ch_name,
+                'epg_id': pick.get('id'),
+                'epg_name': pick.get('name'),
+                'epg_channel_id': pick.get('channel_id'),
+                'score': 1.0,
+                'method': 'exact',
+            }
+            if country_hint:
+                entry['country_matched'] = pick.get('_country') == country_hint
+            results.append(entry)
+            matched = True
+
+        if not matched:
+            collapsed_hits = [c for coll, c in norm_cand_collapsed if coll == norm_ch_collapsed]
+            if collapsed_hits:
+                pick = _pick_best_by_country(collapsed_hits, country_hint) if country_hint else collapsed_hits[0]
+                entry = {
                     'channel_id': ch.get('id'),
                     'channel_name': ch_name,
-                    'epg_id': c.get('id'),
-                    'epg_name': c.get('name'),
-                    'epg_channel_id': c.get('channel_id'),
-                    'score': 1.0,
+                    'epg_id': pick.get('id'),
+                    'epg_name': pick.get('name'),
+                    'epg_channel_id': pick.get('channel_id'),
+                    'score': 0.99,
                     'method': 'exact',
-                })
+                }
+                if country_hint:
+                    entry['country_matched'] = pick.get('_country') == country_hint
+                results.append(entry)
                 matched = True
-                break
-
-        if not matched:
-            for coll, c in norm_cand_collapsed:
-                if coll == norm_ch_collapsed:
-                    results.append({
-                        'channel_id': ch.get('id'),
-                        'channel_name': ch_name,
-                        'epg_id': c.get('id'),
-                        'epg_name': c.get('name'),
-                        'epg_channel_id': c.get('channel_id'),
-                        'score': 0.99,
-                        'method': 'exact',
-                    })
-                    matched = True
-                    break
 
         # --- Stage 2: Substring match with 75% length gate ---
+        # Extract country hint early so substring and fuzzy stages can both use it
+        country_hint = ch.get('country_hint', '').upper() if ch.get('country_hint') else None
+
         if not matched:
-            best_substr = None
             best_ratio = 0.0
+            substr_hits = []
             for c in norm_candidates:
                 cn = c['_norm']
                 if norm_ch in cn or cn in norm_ch:
                     lr = min(len(norm_ch), len(cn)) / max(len(norm_ch), len(cn), 1)
-                    if lr >= 0.75 and lr > best_ratio:
-                        best_ratio = lr
-                        best_substr = c
+                    if lr >= 0.75:
+                        if lr > best_ratio:
+                            best_ratio = lr
+                            substr_hits = [c]
+                        elif lr == best_ratio:
+                            substr_hits.append(c)
 
-            if best_substr:
-                results.append({
+            if substr_hits:
+                pick = _pick_best_by_country(substr_hits, country_hint) if country_hint else substr_hits[0]
+                entry = {
                     'channel_id': ch.get('id'),
                     'channel_name': ch_name,
-                    'epg_id': best_substr.get('id'),
-                    'epg_name': best_substr.get('name'),
-                    'epg_channel_id': best_substr.get('channel_id'),
+                    'epg_id': pick.get('id'),
+                    'epg_name': pick.get('name'),
+                    'epg_channel_id': pick.get('channel_id'),
                     'score': round(best_ratio, 3),
                     'method': 'substring',
-                })
+                }
+                if country_hint:
+                    entry['country_matched'] = pick.get('_country') == country_hint
+                results.append(entry)
                 matched = True
 
-        # --- Stage 3: RapidFuzz matching ---
+        # --- Stage 3: RapidFuzz matching (with country bonus) ---
+
         if not matched and _rapidfuzz_available:
-            best_score = 0
-            best_candidate = None
-
+            scored = []
             for c in norm_candidates:
-                final = _compute_fuzzy_score(norm_ch, c['_norm'])
-                if final > best_score:
-                    best_score = final
-                    best_candidate = c
+                base = _compute_fuzzy_score(norm_ch, c['_norm']) / 100.0
+                scored.append((base, c))
 
-            if best_candidate and best_score >= fuzzy_threshold:
-                results.append({
-                    'channel_id': ch.get('id'),
-                    'channel_name': ch_name,
-                    'epg_id': best_candidate.get('id'),
-                    'epg_name': best_candidate.get('name'),
-                    'epg_channel_id': best_candidate.get('channel_id'),
-                    'score': round(best_score / 100, 3),
-                    'method': 'rapidfuzz',
-                })
-                matched = True
+            if scored:
+                best_base = max(s[0] for s in scored)
+                best_adjusted = 0
+                best_candidate = None
+                best_base_score = 0
+                was_country_matched = False
 
-        # --- Stage 4: N-gram TF-IDF fallback for unmatched ---
+                for base, c in scored:
+                    adjusted = base
+                    cm = False
+                    if country_hint and c.get('_country') == country_hint:
+                        if best_base - base <= COUNTRY_BONUS_WINDOW:
+                            adjusted = base + COUNTRY_BONUS
+                            cm = True
+                    if adjusted > best_adjusted:
+                        best_adjusted = adjusted
+                        best_candidate = c
+                        best_base_score = base
+                        was_country_matched = cm
+
+                if best_candidate and best_adjusted >= (fuzzy_threshold / 100.0):
+                    entry = {
+                        'channel_id': ch.get('id'),
+                        'channel_name': ch_name,
+                        'epg_id': best_candidate.get('id'),
+                        'epg_name': best_candidate.get('name'),
+                        'epg_channel_id': best_candidate.get('channel_id'),
+                        'score': round(best_adjusted, 3),
+                        'base_score': round(best_base_score, 3),
+                        'method': 'rapidfuzz',
+                    }
+                    if country_hint:
+                        entry['country_bonus'] = COUNTRY_BONUS if was_country_matched else 0
+                        entry['country_matched'] = was_country_matched
+                    results.append(entry)
+                    matched = True
+
+        # --- Stage 4: N-gram TF-IDF fallback (with country bonus) ---
         if not matched and epg_sparse_vecs is not None and tfidf_matcher is not None:
             try:
                 query_sparse = tfidf_matcher._compute_sparse_tfidf(norm_ch)
                 similarities = sparse_cosine_batch(query_sparse, epg_sparse_vecs)
 
-                best_idx = max(range(len(similarities)), key=lambda i: similarities[i])
-                best_sim = similarities[best_idx]
+                best_base_sim = max(similarities) if similarities else 0
+                best_sim = 0
+                best_idx = 0
+                was_country_matched = False
+
+                for i, sim in enumerate(similarities):
+                    adjusted = sim
+                    cm = False
+                    if country_hint and norm_candidates[i].get('_country') == country_hint:
+                        if best_base_sim - sim <= COUNTRY_BONUS_WINDOW:
+                            adjusted = sim + COUNTRY_BONUS
+                            cm = True
+                    if adjusted > best_sim:
+                        best_sim = adjusted
+                        best_idx = i
+                        was_country_matched = cm
 
                 if best_sim >= ngram_threshold:
                     c = norm_candidates[best_idx]
-                    results.append({
+                    entry = {
                         'channel_id': ch.get('id'),
                         'channel_name': ch_name,
                         'epg_id': c.get('id'),
                         'epg_name': c.get('name'),
                         'epg_channel_id': c.get('channel_id'),
                         'score': round(best_sim, 3),
+                        'base_score': round(similarities[best_idx], 3),
                         'method': 'ngram_tfidf',
-                    })
+                    }
+                    if country_hint:
+                        entry['country_bonus'] = COUNTRY_BONUS if was_country_matched else 0
+                        entry['country_matched'] = was_country_matched
+                    results.append(entry)
             except Exception as e:
                 logger.error(f"N-gram batch matching error for '{ch_name}': {e}")
 
@@ -820,12 +1050,13 @@ def match_single():
             {"id": 1, "name": "CNN International", "channel_id": "CNNI.us"},
             {"id": 2, "name": "CNN en Espanol", "channel_id": "CNNE.us"}
         ],
+        "country_hint": "US",
         "ngram_threshold": 0.55,
         "fuzzy_threshold": 80,
         "use_ngram": true
     }
 
-    @returns Match result or null
+    @returns Match result or null (includes country debug fields when hint provided)
     """
     data = request.get_json(silent=True)
     if not data or not isinstance(data, dict):
@@ -843,7 +1074,14 @@ def match_single():
     fuzzy_threshold = _coerce_float(data.get('fuzzy_threshold'), DEFAULT_FUZZY_THRESHOLD)
     use_ngram = _coerce_bool(data.get('use_ngram', data.get('use_ml')), True)
 
-    result = match_channel(channel_name, epg_candidates, ngram_threshold, fuzzy_threshold, use_ngram)
+    # Extract optional country hint (2-3 letter code, e.g., "US", "UK", "ES")
+    country_hint = data.get('country_hint')
+    if isinstance(country_hint, str) and 2 <= len(country_hint) <= 3:
+        country_hint = country_hint.upper()
+    else:
+        country_hint = None
+
+    result = match_channel(channel_name, epg_candidates, ngram_threshold, fuzzy_threshold, use_ngram, country_hint)
 
     return jsonify({'match': result})
 
@@ -857,8 +1095,8 @@ def match_batch_endpoint():
     POST body:
     {
         "channels": [
-            {"id": 123, "name": "GO: CNN INT RAW"},
-            {"id": 456, "name": "IT: RAI 1 4K"}
+            {"id": 123, "name": "GO: CNN INT RAW", "country_hint": "US"},
+            {"id": 456, "name": "IT: RAI 1 4K", "country_hint": "IT"}
         ],
         "epg_candidates": [
             {"id": 1, "name": "CNN International", "channel_id": "CNNI.us"},
@@ -867,6 +1105,9 @@ def match_batch_endpoint():
         "conservative": true,
         "use_ngram": true
     }
+
+    Each channel may include an optional 'country_hint' (2-3 letter code).
+    When provided, same-country EPG candidates get a small scoring bonus.
 
     @returns List of matched results (unmatched channels not included)
     """

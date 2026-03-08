@@ -331,7 +331,9 @@ class SimilaritySearchService
         // This catches abbreviations like "CNN INT" -> "CNN International" that
         // string-based algorithms miss. Requires the ml-matcher service on port 5599.
         if (config('services.ml_matcher.enabled', true)) {
-            $mlMatch = $this->findMatchViaMl($normalizedChan, $epg, $debug);
+            // Extract country hint from channel's group for country-aware ranking
+            $countryHint = $this->extractCountryHint($channel);
+            $mlMatch = $this->findMatchViaMl($normalizedChan, $epg, $debug, $countryHint);
             if ($mlMatch) {
                 if ($debug) {
                     Log::debug("Channel {$channel->id} '{$fallbackName}' matched via ML semantic similarity with channel_id={$mlMatch->channel_id}");
@@ -446,7 +448,21 @@ class SimilaritySearchService
      * @param  bool  $debug  Whether to log debug info
      * @return  EpgChannel|null  The matched EPG channel or null
      */
-    private function findMatchViaMl(string $normalizedName, Epg $epg, bool $debug = false): ?EpgChannel
+    /**
+     * Find the best EPG match using the ML matcher service.
+     *
+     * Sends the channel name and EPG candidates to the Python ml-matcher
+     * service for fuzzy/n-gram matching. When a country hint is available,
+     * same-country candidates get a small scoring bonus to break ties
+     * between cross-country duplicates (e.g., ES vs GR Nickelodeon).
+     *
+     * @param  string  $normalizedName  Pre-normalized channel name
+     * @param  Epg  $epg  The EPG source to match against
+     * @param  bool  $debug  Whether to log debug info
+     * @param  string|null  $countryHint  Optional 2-3 letter country code for ranking bonus
+     * @return  EpgChannel|null  The matched EPG channel or null
+     */
+    private function findMatchViaMl(string $normalizedName, Epg $epg, bool $debug = false, ?string $countryHint = null): ?EpgChannel
     {
         $mlMatcherUrl = config('services.ml_matcher.url', 'http://127.0.0.1:5599');
 
@@ -467,15 +483,23 @@ class SimilaritySearchService
             'channel_id' => $c->channel_id,
         ])->values()->toArray();
 
+        // Build the request payload with optional country hint
+        $payload = [
+            'channel_name' => $normalizedName,
+            'epg_candidates' => $candidates,
+            'ml_threshold' => 0.65,
+            'fuzzy_threshold' => 85,
+            'use_ml' => true,
+        ];
+
+        // Pass country hint to ml-matcher for same-country ranking bonus
+        if ($countryHint) {
+            $payload['country_hint'] = $countryHint;
+        }
+
         try {
             $response = \Illuminate\Support\Facades\Http::timeout(30)
-                ->post("{$mlMatcherUrl}/match", [
-                    'channel_name' => $normalizedName,
-                    'epg_candidates' => $candidates,
-                    'ml_threshold' => 0.65,
-                    'fuzzy_threshold' => 85,
-                    'use_ml' => true,
-                ]);
+                ->post("{$mlMatcherUrl}/match", $payload);
 
             if (! $response->successful()) {
                 if ($debug) {
@@ -501,6 +525,42 @@ class SimilaritySearchService
 
             return null;
         }
+    }
+
+    /**
+     * Extract a country hint from a channel's group_internal field.
+     *
+     * Detects common IPTV provider group naming patterns like "US| SPORTS NETWORK",
+     * "ES| M+ CINE", "UK| SKY CINEMA" and returns the 2-3 letter country code.
+     * Falls back to the channel title prefix if group doesn't have a clear code.
+     *
+     * @param  mixed  $channel  Channel model with group_internal and title fields
+     * @return  string|null  Uppercase 2-3 letter country code, or null if not detected
+     */
+    private function extractCountryHint($channel): ?string
+    {
+        // Priority 1: Extract from group_internal (most reliable)
+        // Matches patterns like "US| SPORTS NETWORK", "ES| M+ CINE", "UK- SKY"
+        if ($channel->group_internal && preg_match('/^([A-Z]{2,3})\s*[|\-:]/i', $channel->group_internal, $m)) {
+            $code = strtoupper($m[1]);
+
+            // Skip false positives that look like country codes but aren't
+            if (! in_array($code, ['GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'NO', 'VO', 'TY'])) {
+                return $code;
+            }
+        }
+
+        // Priority 2: Extract from channel title prefix (fallback)
+        // Matches "US: CNN", "IT| Rai 1", etc.
+        $title = $channel->title_custom ?? $channel->title ?? $channel->name;
+        if ($title && preg_match('/^([A-Z]{2,3})\s*[|\-:]/i', $title, $m)) {
+            $code = strtoupper($m[1]);
+            if (! in_array($code, ['GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'NO', 'VO', 'TY'])) {
+                return $code;
+            }
+        }
+
+        return null;
     }
 
     /**
