@@ -98,11 +98,14 @@ QUALITY_PATTERNS = [
 ]
 
 # Country/region prefixes to strip
+# Each pattern targets a specific provider formatting style
 GEO_PATTERNS = [
-    r'^[A-Z]{2,3}\s*[|:]\s*',       # "IT: ", "US| ", "RO: "
+    r'^[A-Z]{2,3}\s*[|:]\s*',       # "IT: ", "US| ", "RO: ", "UK:"
     r'^[A-Z]{2}-[A-Z]+\|\s*',       # "UK-ITV| "
+    r'^[A-Z]{2,3}\s*-\s+',          # "US - CNN", "UK - Sky News"
     r'^\([A-Z]{2,3}\)\s*',          # "(US) "
-    r'\|[A-Z]{2}\|',                # "|FR|"
+    r'\|[A-Z]{2,3}\|',              # "|FR|", "|USA|"
+    r'┃[A-Z]{2,3}┃\s*',            # "┃NL┃ RTL4", "┃US┃ CNN"
 ]
 
 # Unicode superscript junk from IPTV providers
@@ -128,12 +131,12 @@ def normalize_name(name: str) -> str:
 
     Applies the full cleaning pipeline:
     1. Unicode NFD decomposition (strips accents)
-    2. Country/region prefix removal
-    3. Quality indicator removal
-    4. Superscript/symbol removal
-    5. Stop word removal
+    2. Country/region prefix removal (before symbol strip so ┃XX┃ works)
+    3. Superscript/symbol/hash removal
+    4. Quality indicator removal
+    5. Bracket content removal
     6. Numeric spacing normalization ("BBC1" -> "BBC 1")
-    7. Whitespace collapse
+    7. Stop word removal + whitespace collapse
 
     @param name - Raw channel name from provider
     @returns Cleaned, lowercased name ready for matching
@@ -148,6 +151,11 @@ def normalize_name(name: str) -> str:
     # Lowercase
     name = name.lower()
 
+    # Strip country/region prefixes FIRST -- before symbol stripping
+    # so patterns like ┃XX┃ can still match their special chars
+    for pattern in GEO_PATTERNS:
+        name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+
     # Strip superscript unicode junk
     name = re.sub(SUPERSCRIPT_PATTERN, '', name)
 
@@ -156,10 +164,6 @@ def normalize_name(name: str) -> str:
 
     # Strip hash markers
     name = re.sub(HASH_PATTERN, '', name)
-
-    # Strip country/region prefixes
-    for pattern in GEO_PATTERNS:
-        name = re.sub(pattern, '', name, flags=re.IGNORECASE)
 
     # Strip quality indicators
     for pattern in QUALITY_PATTERNS:
@@ -172,9 +176,11 @@ def normalize_name(name: str) -> str:
     # Remove non-alphanumeric except spaces
     name = re.sub(r'[^\w\s]', ' ', name)
 
-    # Add space between letters and numbers ("bbc1" -> "bbc 1")
+    # Add space between letters and numbers ("bbc1" -> "bbc 1", "4music" -> "4 music")
     # This makes "ITV1" and "ITV 1" equivalent after tokenization
+    # Both directions needed: letter→digit AND digit→letter (e.g. "E4" -> "E 4")
     name = re.sub(r'([a-z])(\d)', r'\1 \2', name)
+    name = re.sub(r'(\d)([a-z])', r'\1 \2', name)
 
     # Tokenize, remove stop words, collapse
     tokens = name.split()
@@ -468,10 +474,55 @@ def match_channel(
     if not candidates_with_norm:
         return None
 
+    # --- Stage 1: Exact match after normalization (cheapest check) ---
+    # If normalized names are identical, it's a perfect match — no fuzzy needed.
+    # Also checks with whitespace/ampersand stripped for near-exact cases.
+    norm_collapsed = re.sub(r'[\s&]+', '', norm_channel)
+    for c in candidates_with_norm:
+        if c['_norm'] == norm_channel:
+            return {
+                'id': c.get('id'),
+                'name': c.get('name'),
+                'channel_id': c.get('channel_id'),
+                'score': 1.0,
+                'method': 'exact',
+            }
+        cand_collapsed = re.sub(r'[\s&]+', '', c['_norm'])
+        if cand_collapsed == norm_collapsed:
+            return {
+                'id': c.get('id'),
+                'name': c.get('name'),
+                'channel_id': c.get('channel_id'),
+                'score': 0.99,
+                'method': 'exact',
+            }
+
+    # --- Stage 2: Substring match with 75% length gate ---
+    # Catches close-length containment cases without needing fuzzy scoring,
+    # while blocking loose matches like "story" ↔ "history".
+    best_substr_match = None
+    best_substr_ratio = 0.0
+    for c in candidates_with_norm:
+        cn = c['_norm']
+        if norm_channel in cn or cn in norm_channel:
+            length_ratio = min(len(norm_channel), len(cn)) / max(len(norm_channel), len(cn), 1)
+            if length_ratio >= 0.75 and length_ratio > best_substr_ratio:
+                best_substr_ratio = length_ratio
+                best_substr_match = c
+
+    if best_substr_match and best_substr_ratio >= 0.75:
+        return {
+            'id': best_substr_match.get('id'),
+            'name': best_substr_match.get('name'),
+            'channel_id': best_substr_match.get('channel_id'),
+            'score': round(best_substr_ratio, 3),
+            'method': 'substring',
+        }
+
     best_match = None
     best_score = 0
 
-    # --- Stage 1: RapidFuzz matching ---
+    # --- Stage 3: RapidFuzz matching ---
     if _rapidfuzz_available:
         for c in candidates_with_norm:
             final_score = _compute_fuzzy_score(norm_channel, c['_norm'])
@@ -488,7 +539,7 @@ def match_channel(
                 'method': 'rapidfuzz',
             }
 
-    # --- Stage 2: TF-IDF Character N-gram Matching (fallback) ---
+    # --- Stage 4: TF-IDF Character N-gram Matching (fallback) ---
     # Fit on candidates only (not query) so query-specific n-grams
     # don't dilute IDF weights. This matches batch-mode behavior.
     if use_ngram and _numpy_available:
@@ -564,6 +615,9 @@ def match_batch(
         except Exception as e:
             logger.error(f"Failed to compute EPG TF-IDF vectors: {e}")
 
+    # Pre-compute collapsed names for exact matching (strip whitespace & ampersands)
+    norm_cand_collapsed = [(re.sub(r'[\s&]+', '', c['_norm']), c) for c in norm_candidates]
+
     results = []
     for ch in channels:
         ch_name = _first_string(ch, 'name')
@@ -573,8 +627,63 @@ def match_batch(
 
         matched = False
 
-        # --- RapidFuzz matching ---
-        if _rapidfuzz_available:
+        # --- Stage 1: Exact match after normalization ---
+        norm_ch_collapsed = re.sub(r'[\s&]+', '', norm_ch)
+        for c in norm_candidates:
+            if c['_norm'] == norm_ch:
+                results.append({
+                    'channel_id': ch.get('id'),
+                    'channel_name': ch_name,
+                    'epg_id': c.get('id'),
+                    'epg_name': c.get('name'),
+                    'epg_channel_id': c.get('channel_id'),
+                    'score': 1.0,
+                    'method': 'exact',
+                })
+                matched = True
+                break
+
+        if not matched:
+            for coll, c in norm_cand_collapsed:
+                if coll == norm_ch_collapsed:
+                    results.append({
+                        'channel_id': ch.get('id'),
+                        'channel_name': ch_name,
+                        'epg_id': c.get('id'),
+                        'epg_name': c.get('name'),
+                        'epg_channel_id': c.get('channel_id'),
+                        'score': 0.99,
+                        'method': 'exact',
+                    })
+                    matched = True
+                    break
+
+        # --- Stage 2: Substring match with 75% length gate ---
+        if not matched:
+            best_substr = None
+            best_ratio = 0.0
+            for c in norm_candidates:
+                cn = c['_norm']
+                if norm_ch in cn or cn in norm_ch:
+                    lr = min(len(norm_ch), len(cn)) / max(len(norm_ch), len(cn), 1)
+                    if lr >= 0.75 and lr > best_ratio:
+                        best_ratio = lr
+                        best_substr = c
+
+            if best_substr:
+                results.append({
+                    'channel_id': ch.get('id'),
+                    'channel_name': ch_name,
+                    'epg_id': best_substr.get('id'),
+                    'epg_name': best_substr.get('name'),
+                    'epg_channel_id': best_substr.get('channel_id'),
+                    'score': round(best_ratio, 3),
+                    'method': 'substring',
+                })
+                matched = True
+
+        # --- Stage 3: RapidFuzz matching ---
+        if not matched and _rapidfuzz_available:
             best_score = 0
             best_candidate = None
 
@@ -596,7 +705,7 @@ def match_batch(
                 })
                 matched = True
 
-        # --- N-gram TF-IDF fallback for unmatched ---
+        # --- Stage 4: N-gram TF-IDF fallback for unmatched ---
         if not matched and epg_sparse_vecs is not None and tfidf_matcher is not None:
             try:
                 query_sparse = tfidf_matcher._compute_sparse_tfidf(norm_ch)
