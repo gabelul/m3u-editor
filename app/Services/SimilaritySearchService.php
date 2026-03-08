@@ -539,24 +539,43 @@ class SimilaritySearchService
      */
     private function extractCountryHint($channel): ?string
     {
-        // Priority 1: Extract from group_internal (most reliable)
-        // Matches patterns like "US| SPORTS NETWORK", "ES| M+ CINE", "UK- SKY"
-        if ($channel->group_internal && preg_match('/^([A-Z]{2,3})\s*[|\-:]/i', $channel->group_internal, $m)) {
-            $code = strtoupper($m[1]);
+        // False positives: 2-letter prefixes that look like country codes but aren't.
+        // NO is NOT here — it's a valid country code (Norway).
+        $denylist = ['GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'VO', 'TY'];
 
-            // Skip false positives that look like country codes but aren't
-            if (! in_array($code, ['GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'NO', 'VO', 'TY'])) {
-                return $code;
+        // All patterns that can contain a country code, aligned with Python's
+        // _COUNTRY_EXTRACT_PATTERNS to avoid PHP extracting fewer hints than
+        // the matcher can detect on the candidate side.
+        $patterns = [
+            '/^([A-Z]{2,3})\s*[|\-:]\s*/i',   // "US| ", "IT: ", "UK- "
+            '/^\(([A-Z]{2,3})\)\s*/i',          // "(US) "
+            '/\|([A-Z]{2,3})\|/i',              // "|FR|"
+            '/┃([A-Z]{2,3})┃/i',               // "┃NL┃"
+            '/^([A-Z]{2})-[A-Z]+\|\s*/i',       // "UK-ITV| " → "UK"
+        ];
+
+        // Priority 1: Extract from group_internal (most reliable)
+        if ($channel->group_internal) {
+            foreach ($patterns as $pattern) {
+                if (preg_match($pattern, $channel->group_internal, $m)) {
+                    $code = strtoupper($m[1]);
+                    if (! in_array($code, $denylist)) {
+                        return $code;
+                    }
+                }
             }
         }
 
         // Priority 2: Extract from channel title prefix (fallback)
-        // Matches "US: CNN", "IT| Rai 1", etc.
         $title = $channel->title_custom ?? $channel->title ?? $channel->name;
-        if ($title && preg_match('/^([A-Z]{2,3})\s*[|\-:]/i', $title, $m)) {
-            $code = strtoupper($m[1]);
-            if (! in_array($code, ['GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'NO', 'VO', 'TY'])) {
-                return $code;
+        if ($title) {
+            foreach ($patterns as $pattern) {
+                if (preg_match($pattern, $title, $m)) {
+                    $code = strtoupper($m[1]);
+                    if (! in_array($code, $denylist)) {
+                        return $code;
+                    }
+                }
             }
         }
 

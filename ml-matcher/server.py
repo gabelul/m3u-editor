@@ -229,7 +229,7 @@ def extract_country(name: str) -> Optional[str]:
             code = m.group(1).upper()
             # Sanity check: skip common false positives that look like country codes
             # but are actually channel name prefixes (e.g., "GO: Bloomberg" → "GO")
-            if code in {'GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'NO', 'VO', 'TY'}:
+            if code in {'GO', 'TV', 'HD', 'SD', 'VR', 'OK', 'VO', 'TY'}:
                 continue
             return code
     return None
@@ -799,7 +799,9 @@ def match_batch(
 
         # --- Stage 1: Exact match after normalization ---
         # Collect all exact matches and prefer same-country when hint is set
-        country_hint = ch.get('country_hint', '').upper() if ch.get('country_hint') else None
+        # Safely coerce country_hint: must be a 2-3 letter string, ignore bad types
+        raw_hint = ch.get('country_hint')
+        country_hint = raw_hint.upper() if isinstance(raw_hint, str) and 2 <= len(raw_hint) <= 3 else None
         norm_ch_collapsed = re.sub(r'[\s&]+', '', norm_ch)
 
         exact_hits = [c for c in norm_candidates if c['_norm'] == norm_ch]
@@ -838,9 +840,6 @@ def match_batch(
                 matched = True
 
         # --- Stage 2: Substring match with 75% length gate ---
-        # Extract country hint early so substring and fuzzy stages can both use it
-        country_hint = ch.get('country_hint', '').upper() if ch.get('country_hint') else None
-
         if not matched:
             best_ratio = 0.0
             substr_hits = []
