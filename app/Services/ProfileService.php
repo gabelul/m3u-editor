@@ -43,7 +43,7 @@ class ProfileService
      * Iterates through enabled profiles in priority order and returns
      * the first one with available capacity.
      */
-    public static function selectProfile(Playlist $playlist, ?int $excludeProfileId = null): ?PlaylistProfile
+    public static function selectProfile(Playlist $playlist, ?int $excludeProfileId = null, bool $forceSelect = false): ?PlaylistProfile
     {
         if (! $playlist->profiles_enabled) {
             return null;
@@ -61,6 +61,7 @@ class ProfileService
             'playlist_id' => $playlist->id,
             'total_profiles' => $profiles->count(),
             'exclude_profile_id' => $excludeProfileId,
+            'force_select' => $forceSelect,
         ]);
 
         foreach ($profiles as $profile) {
@@ -88,6 +89,23 @@ class ProfileService
 
                 return $profile;
             }
+        }
+
+        // When force-select is enabled (bypass provider limits), pick the least-loaded
+        // profile even though all are at capacity. This allows streams to start when
+        // available_streams hasn't been reached but provider limits have.
+        if ($forceSelect && $profiles->isNotEmpty()) {
+            $best = $profiles->sortBy(fn ($p) => static::getConnectionCount($p))->first();
+
+            Log::info('Force-selected profile (bypass provider limits)', [
+                'profile_id' => $best->id,
+                'profile_name' => $best->name,
+                'active_connections' => static::getConnectionCount($best),
+                'max_connections' => $best->effective_max_streams,
+                'playlist_id' => $playlist->id,
+            ]);
+
+            return $best;
         }
 
         Log::warning('No profiles with capacity available for playlist', [
@@ -123,6 +141,7 @@ class ProfileService
         ?int $excludeProfileId = null,
         ?int $channelId = null,
         ?string $channelPlaylistUuid = null,
+        bool $forceSelect = false,
     ): array {
         if (! $playlist->profiles_enabled) {
             return [null, null];
@@ -166,7 +185,7 @@ class ProfileService
             }
 
             // Inside the lock: select + increment atomically
-            $profile = static::selectProfile($playlist, $excludeProfileId);
+            $profile = static::selectProfile($playlist, $excludeProfileId, $forceSelect);
 
             if ($profile) {
                 // Reserve the slot immediately so the next concurrent request
@@ -978,7 +997,7 @@ class ProfileService
      *
      * @return array{0: PlaylistProfile|null, 1: string|null}
      */
-    public static function reconcileAndSelectProfile(Playlist $playlist, ?int $excludeProfileId = null): array
+    public static function reconcileAndSelectProfile(Playlist $playlist, ?int $excludeProfileId = null, bool $forceSelect = false): array
     {
         if (! $playlist->profiles_enabled) {
             return [null, null];
@@ -988,7 +1007,7 @@ class ProfileService
         static::reconcileFromProxy($playlist);
 
         // Now retry profile selection with atomic reservation
-        return static::selectAndReserveProfile($playlist, $excludeProfileId);
+        return static::selectAndReserveProfile($playlist, $excludeProfileId, forceSelect: $forceSelect);
     }
 
     /**
