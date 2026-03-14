@@ -6,9 +6,11 @@ use App\Enums\ChannelLogoType;
 use App\Facades\PlaylistFacade;
 use App\Facades\ProxyFacade;
 use App\Models\Channel;
+use App\Models\ChannelFailover;
 use App\Models\Group;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -1406,6 +1408,283 @@ class ChannelController extends Controller
                 'frame_counts' => $frameCounts,
                 'avg_frames_per_check' => $avgFrames,
                 'total_test_duration_ms' => $totalDuration,
+            ],
+        ]);
+    }
+
+    /**
+     * Set failovers for a channel
+     *
+     * Replace all failover associations for the given primary channel.
+     * The order of the failover_channel_ids array determines priority (index 0 = highest priority).
+     *
+     * @bodyParam failover_channel_ids integer[] required Ordered array of channel IDs to use as failovers. Example: [101, 102, 103]
+     * @bodyParam deactivate_failover_channels boolean When true, failover channels will be disabled (enabled=false). Defaults to false. Example: true
+     * @bodyParam metadata object Optional metadata to attach to each failover entry. Example: {"source": "epg-sync"}
+     *
+     * @response 200 {
+     *   "success": true,
+     *   "message": "3 failover(s) set for channel 100",
+     *   "data": {
+     *     "channel_id": 100,
+     *     "failovers": [
+     *       {"id": 101, "title": "Channel HD", "priority": 0},
+     *       {"id": 102, "title": "Channel SD", "priority": 1},
+     *       {"id": 103, "title": "Channel RAW", "priority": 2}
+     *     ],
+     *     "deactivated_count": 3
+     *   }
+     * }
+     * @response 404 {
+     *   "success": false,
+     *   "message": "Channel not found"
+     * }
+     * @response 422 {
+     *   "message": "The given data was invalid.",
+     *   "errors": {}
+     * }
+     */
+    public function setFailovers(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+
+        $channel = Channel::where('user_id', $user->id)->find($id);
+
+        if (! $channel) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Channel not found',
+            ], 404);
+        }
+
+        $validated = $request->validate([
+            'failover_channel_ids' => 'required|array|min:1',
+            'failover_channel_ids.*' => [
+                'integer',
+                'distinct',
+                Rule::exists('channels', 'id')->where('user_id', $user->id),
+            ],
+            'deactivate_failover_channels' => 'sometimes|boolean',
+            'metadata' => 'sometimes|nullable|array',
+        ]);
+
+        $failoverIds = $validated['failover_channel_ids'];
+        $deactivateFailovers = (bool) ($validated['deactivate_failover_channels'] ?? false);
+        $metadata = $validated['metadata'] ?? null;
+
+        if (in_array($id, $failoverIds, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A channel cannot be its own failover',
+            ], 422);
+        }
+
+        $deactivatedCount = 0;
+
+        DB::transaction(function () use ($channel, $user, $failoverIds, $deactivateFailovers, $metadata, &$deactivatedCount) {
+            ChannelFailover::where('channel_id', $channel->id)
+                ->where('user_id', $user->id)
+                ->delete();
+
+            $records = [];
+            foreach ($failoverIds as $sort => $failoverChannelId) {
+                $records[] = [
+                    'user_id' => $user->id,
+                    'channel_id' => $channel->id,
+                    'channel_failover_id' => $failoverChannelId,
+                    'sort' => $sort,
+                    'metadata' => $metadata ? json_encode($metadata) : null,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+            }
+
+            ChannelFailover::insert($records);
+
+            if ($deactivateFailovers) {
+                $deactivatedCount = Channel::where('user_id', $user->id)
+                    ->whereIn('id', $failoverIds)
+                    ->where('enabled', true)
+                    ->update(['enabled' => false]);
+            }
+        });
+
+        $channel->load('failoverChannels');
+
+        $failovers = $channel->failoverChannels->map(fn (Channel $failover) => [
+            'id' => $failover->id,
+            'title' => $failover->title_custom ?? $failover->title,
+            'priority' => $failover->pivot->sort ?? 0,
+        ])->toArray();
+
+        return response()->json([
+            'success' => true,
+            'message' => count($failovers).' failover(s) set for channel '.$channel->id,
+            'data' => [
+                'channel_id' => $channel->id,
+                'failovers' => $failovers,
+                'deactivated_count' => $deactivatedCount,
+            ],
+        ]);
+    }
+
+    /**
+     * Clear failovers for a channel
+     *
+     * Remove all failover associations from the given primary channel. The failover channels themselves are not deleted.
+     *
+     * @response 200 {
+     *   "success": true,
+     *   "message": "Failovers cleared for channel 100",
+     *   "data": {
+     *     "channel_id": 100,
+     *     "removed_count": 3
+     *   }
+     * }
+     * @response 404 {
+     *   "success": false,
+     *   "message": "Channel not found"
+     * }
+     */
+    public function clearFailovers(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+
+        $channel = Channel::where('user_id', $user->id)->find($id);
+
+        if (! $channel) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Channel not found',
+            ], 404);
+        }
+
+        $removedCount = ChannelFailover::where('channel_id', $channel->id)
+            ->where('user_id', $user->id)
+            ->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Failovers cleared for channel '.$channel->id,
+            'data' => [
+                'channel_id' => $channel->id,
+                'removed_count' => $removedCount,
+            ],
+        ]);
+    }
+
+    /**
+     * Bulk set failovers for multiple channels
+     *
+     * Replace failover channels for multiple primary channels in a single request.
+     * Each mapping specifies a primary channel and its ordered list of failover channel IDs.
+     * The order of failover_channel_ids determines priority (index 0 = highest priority).
+     *
+     * @bodyParam mappings array required Array of primary-to-failover mappings. Example: [{"primary_channel_id": 100, "failover_channel_ids": [101, 102]}]
+     * @bodyParam mappings[].primary_channel_id integer required The primary channel ID. Example: 100
+     * @bodyParam mappings[].failover_channel_ids integer[] required Ordered failover channel IDs. Example: [101, 102, 103]
+     * @bodyParam mappings[].metadata object Optional metadata for each failover entry. Example: {"source": "epg-sync"}
+     * @bodyParam deactivate_failover_channels boolean When true, failover channels will be disabled (enabled=false). Defaults to false. Example: true
+     *
+     * @response 200 {
+     *   "success": true,
+     *   "message": "Failovers set for 5 channel(s)",
+     *   "data": {
+     *     "mappings_applied": 5,
+     *     "total_failovers_created": 15,
+     *     "deactivated_count": 10
+     *   }
+     * }
+     * @response 422 {
+     *   "message": "The given data was invalid.",
+     *   "errors": {}
+     * }
+     */
+    public function bulkSetFailovers(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'mappings' => 'required|array|min:1',
+            'mappings.*.primary_channel_id' => [
+                'required',
+                'integer',
+                'distinct',
+                Rule::exists('channels', 'id')->where('user_id', $user->id),
+            ],
+            'mappings.*.failover_channel_ids' => 'required|array|min:1',
+            'mappings.*.failover_channel_ids.*' => [
+                'integer',
+                'distinct',
+                Rule::exists('channels', 'id')->where('user_id', $user->id),
+            ],
+            'mappings.*.metadata' => 'sometimes|nullable|array',
+            'deactivate_failover_channels' => 'sometimes|boolean',
+        ]);
+
+        $mappings = $validated['mappings'];
+        $deactivateFailovers = (bool) ($validated['deactivate_failover_channels'] ?? false);
+
+        foreach ($mappings as $index => $mapping) {
+            if (in_array($mapping['primary_channel_id'], $mapping['failover_channel_ids'], true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Mapping at index {$index}: a channel cannot be its own failover",
+                ], 422);
+            }
+        }
+
+        $primaryIds = array_column($mappings, 'primary_channel_id');
+
+        $totalFailoversCreated = 0;
+        $deactivatedCount = 0;
+
+        DB::transaction(function () use ($mappings, $primaryIds, $user, $deactivateFailovers, &$totalFailoversCreated, &$deactivatedCount) {
+            ChannelFailover::whereIn('channel_id', $primaryIds)
+                ->where('user_id', $user->id)
+                ->delete();
+
+            $allFailoverIds = [];
+            $records = [];
+            foreach ($mappings as $mapping) {
+                $metadata = $mapping['metadata'] ?? null;
+                $encodedMetadata = $metadata ? json_encode($metadata) : null;
+
+                foreach ($mapping['failover_channel_ids'] as $sort => $failoverChannelId) {
+                    $allFailoverIds[] = $failoverChannelId;
+                    $records[] = [
+                        'user_id' => $user->id,
+                        'channel_id' => $mapping['primary_channel_id'],
+                        'channel_failover_id' => $failoverChannelId,
+                        'sort' => $sort,
+                        'metadata' => $encodedMetadata,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
+                }
+            }
+
+            $totalFailoversCreated = count($records);
+
+            foreach (array_chunk($records, 500) as $chunk) {
+                ChannelFailover::insert($chunk);
+            }
+
+            if ($deactivateFailovers) {
+                $deactivatedCount = Channel::where('user_id', $user->id)
+                    ->whereIn('id', array_unique($allFailoverIds))
+                    ->where('enabled', true)
+                    ->update(['enabled' => false]);
+            }
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Failovers set for '.count($mappings).' channel(s)',
+            'data' => [
+                'mappings_applied' => count($mappings),
+                'total_failovers_created' => $totalFailoversCreated,
+                'deactivated_count' => $deactivatedCount,
             ],
         ]);
     }
