@@ -92,11 +92,7 @@ class RunPlaylistFindReplaceRules implements ShouldQueue
             ->success()
             ->title('Saved Find & Replace rules completed')
             ->body("Ran {$summary} for \"{$this->playlist->name}\" in {$completedIn}s.")
-            ->broadcast($user);
-        Notification::make()
-            ->success()
-            ->title('Saved Find & Replace rules completed')
-            ->body("Ran {$summary} for playlist \"{$this->playlist->name}\". Completed in {$completedIn} seconds.")
+            ->broadcast($user)
             ->sendToDatabase($user);
     }
 }
