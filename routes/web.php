@@ -9,9 +9,14 @@ use App\Http\Controllers\NetworkEpgController;
 use App\Http\Controllers\NetworkPlaylistController;
 use App\Http\Controllers\NetworkStreamController;
 use App\Http\Controllers\PlaylistGenerateController;
+use App\Http\Controllers\WatchProgressController;
 use App\Http\Controllers\XtreamApiController;
 use App\Services\ExternalIpService;
 use Illuminate\Support\Facades\Route;
+
+// In-app watch progress tracking (admin panel + guest panel)
+Route::get('/api/watch-progress', [WatchProgressController::class, 'fetch'])->name('watch-progress.fetch');
+Route::post('/api/watch-progress', [WatchProgressController::class, 'update'])->name('watch-progress.update');
 
 // External IP refresh route for admin panel
 Route::post('/admin/refresh-external-ip', function (ExternalIpService $ipService) {
@@ -211,6 +216,16 @@ Route::group(['middleware' => ['auth:sanctum']], function () {
         ->where('id', '[0-9]+')
         ->name('api.channels.stability-test');
 
+    // Channel failover API routes
+    Route::post('channel/{id}/failovers', [\App\Http\Controllers\ChannelController::class, 'setFailovers'])
+        ->where('id', '[0-9]+')
+        ->name('api.channels.failovers.set');
+    Route::delete('channel/{id}/failovers', [\App\Http\Controllers\ChannelController::class, 'clearFailovers'])
+        ->where('id', '[0-9]+')
+        ->name('api.channels.failovers.clear');
+    Route::post('channel/bulk-set-failovers', [\App\Http\Controllers\ChannelController::class, 'bulkSetFailovers'])
+        ->name('api.channels.failovers.bulk-set');
+
     // Group API routes
     Route::group(['prefix' => 'group'], function () {
         Route::post('/', [\App\Http\Controllers\GroupController::class, 'store'])
@@ -261,8 +276,8 @@ Route::group(['prefix' => 'epg'], function () {
  */
 
 // Main Xtream API endpoint at /player_api.php and /get.php
-Route::get('/player_api.php', [XtreamApiController::class, 'handle'])->name('xtream.api.player');
-Route::get('/get.php', [XtreamApiController::class, 'handle'])->name('xtream.api.get');
+Route::match(['get', 'post'], '/player_api.php', [XtreamApiController::class, 'handle'])->name('xtream.api.player');
+Route::match(['get', 'post'], '/get.php', [XtreamApiController::class, 'handle'])->name('xtream.api.get');
 Route::get('/xmltv.php', [XtreamApiController::class, 'epg'])->name('xtream.api.epg');
 
 // Stream endpoints
@@ -309,3 +324,12 @@ Route::get('/local-media/{integration}/stream/{item}', [
     \App\Http\Controllers\MediaServerProxyController::class,
     'streamLocalMedia',
 ])->name('local-media.stream');
+
+/*
+ * WebDAV Media streaming routes
+ * Proxies video files from a WebDAV server
+ */
+Route::get('/webdav-media/{integration}/stream/{item}', [
+    \App\Http\Controllers\MediaServerProxyController::class,
+    'streamWebDavMedia',
+])->name('webdav-media.stream');
