@@ -701,10 +701,6 @@ class M3uProxyService
                         ProfileService::clearChannelStreamMapping($originalChannelId, $originalPlaylistUuid);
                     }
 
-                    // Reconcile Redis counts against actual proxy state before rejecting.
-                    // Fixes race condition where increment fires before the old stream's
-                    // decrement webhook when rapidly switching channels.
-                    ProfileService::reconcileFromProxy($profileSourcePlaylist);
                     [$selectedProfile, $reservationId] = ProfileService::selectAndReserveProfile($profileSourcePlaylist, null, $originalChannelId, $originalPlaylistUuid, $forceSelect, $clientIdentifier);
                 }
 
@@ -896,19 +892,9 @@ class M3uProxyService
                         // Short delay to allow proxy to clean up and webhook to decrement
                         usleep(200000); // 200ms
 
-                        // Reconcile profile counts from proxy to ensure accuracy
-                        ProfileService::reconcileFromProxy($profileSourcePlaylist);
-
                         // Retry profile selection after freeing a slot
                         [$selectedProfile, $reservationId] = ProfileService::selectAndReserveProfile($profileSourcePlaylist, null, $originalChannelId, $originalPlaylistUuid, $forceSelect, $clientIdentifier);
                     }
-                }
-
-                if (! $selectedProfile) {
-                    // Last resort: reconcile Redis counts against actual proxy state.
-                    // Fixes race condition where increment fires before decrement webhook.
-                    ProfileService::reconcileFromProxy($profileSourcePlaylist);
-                    [$selectedProfile, $reservationId] = ProfileService::selectAndReserveProfile($profileSourcePlaylist, null, $originalChannelId, $originalPlaylistUuid, $forceSelect, $clientIdentifier);
                 }
 
                 if (! $selectedProfile) {
@@ -1209,16 +1195,8 @@ class M3uProxyService
                         ]);
 
                         usleep(200000); // 200ms
-                        ProfileService::reconcileFromProxy($profileSourcePlaylist);
                         [$selectedProfile, $reservationId] = ProfileService::selectAndReserveProfile($profileSourcePlaylist, null, $id, $playlist->uuid, $forceSelect, $clientIdentifier);
                     }
-                }
-
-                if (! $selectedProfile) {
-                    // Last resort: reconcile Redis counts against actual proxy state.
-                    // Fixes race condition where increment fires before decrement webhook.
-                    ProfileService::reconcileFromProxy($profileSourcePlaylist);
-                    [$selectedProfile, $reservationId] = ProfileService::selectAndReserveProfile($profileSourcePlaylist, null, $id, $playlist->uuid, $forceSelect, $clientIdentifier);
                 }
 
                 if (! $selectedProfile) {
