@@ -207,9 +207,9 @@ test('selectAndReserveProfile returns null tuple when no capacity', function () 
         ->withProviderInfo(0, 1)
         ->create();
 
-    // Connection count is at max (1)
-    Redis::shouldReceive('get')
-        ->andReturn(1);
+    // Proxy confirms 1 active stream = profile at max_streams=1
+    Http::fake(['*/streams/by-metadata*' => Http::response(['matching_streams' => [], 'total_matching' => 1, 'total_clients' => 1])]);
+    Redis::shouldReceive('smembers')->andReturn([]);
 
     [$selected, $reservationId] = ProfileService::selectAndReserveProfile($playlist);
 
@@ -627,6 +627,7 @@ test('reconcileAndSelectProfile returns null tuple when truly at capacity after 
                     ],
                 ],
             ],
+            'total_matching' => 1,
             'total_clients' => 1,
         ]),
     ]);
@@ -635,6 +636,8 @@ test('reconcileAndSelectProfile returns null tuple when truly at capacity after 
     Redis::shouldReceive('get')
         ->with($countKey)
         ->andReturn(1);
+
+    Redis::shouldReceive('smembers')->andReturn([]);
 
     [$selected, $reservationId] = ProfileService::reconcileAndSelectProfile($playlist);
 

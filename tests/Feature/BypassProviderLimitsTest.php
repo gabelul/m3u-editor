@@ -15,6 +15,7 @@ use App\Models\PlaylistProfile;
 use App\Models\User;
 use App\Services\ProfileService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
 
@@ -27,6 +28,7 @@ beforeEach(function () {
     ]);
 
     config(['proxy.m3u_proxy_host' => 'http://localhost:8765']);
+    config(['proxy.m3u_proxy_port' => null]);
     config(['proxy.m3u_proxy_token' => 'test-token']);
     config(['cache.default' => 'array']);
 });
@@ -64,8 +66,9 @@ function createPlaylistWithFullProfiles(User $user, int $profileCount = 1, int $
 test('selectProfile returns null when all profiles are at capacity and forceSelect is false', function () {
     $playlist = createPlaylistWithFullProfiles($this->user, profileCount: 2, maxStreams: 2);
 
-    // Mock Redis: each profile has 2 active connections (at max_streams=2)
-    Redis::shouldReceive('get')->andReturn(2);
+    // Proxy reports 2 active streams per profile (at max_streams=2)
+    Http::fake(['*/streams/by-metadata*' => Http::response(['matching_streams' => [], 'total_matching' => 2, 'total_clients' => 2])]);
+    Redis::shouldReceive('smembers')->andReturn([]);
 
     $profile = ProfileService::selectProfile($playlist, forceSelect: false);
 
@@ -77,8 +80,9 @@ test('selectProfile returns null when all profiles are at capacity and forceSele
 test('selectProfile force-selects a profile when all are at capacity and forceSelect is true', function () {
     $playlist = createPlaylistWithFullProfiles($this->user, profileCount: 2, maxStreams: 2);
 
-    // Mock Redis: each profile has 2 active connections (at max_streams=2)
-    Redis::shouldReceive('get')->andReturn(2);
+    // Proxy reports 2 active streams per profile (at max_streams=2)
+    Http::fake(['*/streams/by-metadata*' => Http::response(['matching_streams' => [], 'total_matching' => 2, 'total_clients' => 2])]);
+    Redis::shouldReceive('smembers')->andReturn([]);
 
     $profile = ProfileService::selectProfile($playlist, forceSelect: true);
 
@@ -110,17 +114,19 @@ test('selectProfile force-selects the least-loaded profile', function () {
         ->create(['is_primary' => false, 'priority' => 1, 'name' => 'Profile B']);
 
     // Profile A has 3 connections, Profile B has 2 — both over max, B is least loaded
-    Redis::shouldReceive('get')
-        ->andReturnUsing(function ($key) use ($profileA, $profileB) {
-            if (str_contains($key, (string) $profileA->id)) {
-                return 3;
-            }
-            if (str_contains($key, (string) $profileB->id)) {
-                return 2;
+    Http::fake([
+        '*/streams/by-metadata*' => function ($request) use ($profileA) {
+            $value = (int) $request->data()['value'];
+
+            if ($value === $profileA->id) {
+                return Http::response(['matching_streams' => [], 'total_matching' => 3, 'total_clients' => 3]);
             }
 
-            return 0;
-        });
+            return Http::response(['matching_streams' => [], 'total_matching' => 2, 'total_clients' => 2]);
+        },
+    ]);
+
+    Redis::shouldReceive('smembers')->andReturn([]);
 
     $selected = ProfileService::selectProfile($playlist, forceSelect: true);
 

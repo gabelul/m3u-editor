@@ -240,6 +240,7 @@ test('reconcileAndSelectProfile returns null when truly at capacity', function (
                     ],
                 ],
             ],
+            'total_matching' => 1,
             'total_clients' => 1,
         ]),
     ]);
@@ -248,6 +249,8 @@ test('reconcileAndSelectProfile returns null when truly at capacity', function (
     Redis::shouldReceive('get')
         ->with($countKey)
         ->andReturn(1);
+
+    Redis::shouldReceive('smembers')->andReturn([]);
 
     [$selected, $reservationId] = ProfileService::reconcileAndSelectProfile($playlist);
 

@@ -160,7 +160,7 @@ class ProfileService
         }
 
         foreach ($profiles as $profile) {
-            $activeConnections = static::getConnectionCount($profile);
+            $activeConnections = static::getEffectiveConnectionCount($profile);
             $maxConnections = $profile->effective_max_streams;
             $hasCapacity = static::hasCapacity($profile);
 
@@ -190,12 +190,12 @@ class ProfileService
         // profile even though all are at capacity. This allows streams to start when
         // available_streams hasn't been reached but provider limits have.
         if ($forceSelect && $profiles->isNotEmpty()) {
-            $best = $profiles->sortBy(fn ($p) => static::getConnectionCount($p))->first();
+            $best = $profiles->sortBy(fn ($p) => static::getEffectiveConnectionCount($p))->first();
 
             Log::info('Force-selected profile (bypass provider limits)', [
                 'profile_id' => $best->id,
                 'profile_name' => $best->name,
-                'active_connections' => static::getConnectionCount($best),
+                'active_connections' => static::getEffectiveConnectionCount($best),
                 'max_connections' => $best->effective_max_streams,
                 'playlist_id' => $playlist->id,
             ]);
@@ -413,7 +413,7 @@ class ProfileService
             return false;
         }
 
-        $activeConnections = static::getConnectionCount($profile);
+        $activeConnections = static::getEffectiveConnectionCount($profile);
         $maxConnections = $profile->effective_max_streams;
 
         return $activeConnections < $maxConnections;
@@ -439,6 +439,42 @@ class ProfileService
 
             return 0;
         }
+    }
+
+    /**
+     * Get the effective connection count for capacity enforcement.
+     *
+     * Uses the proxy API as ground truth (actual upstream connections), plus any
+     * in-flight reservations tracked in Redis that are not yet visible in the proxy.
+     *
+     * This prevents two problems:
+     *   - Stale Redis INCR counts after a proxy restart blocking new streams.
+     *   - TOCTOU races where concurrent requests both see capacity before the first
+     *     stream appears in the proxy (reservations fill the gap).
+     */
+    public static function getEffectiveConnectionCount(PlaylistProfile $profile): int
+    {
+        // Ground truth: actual upstream streams confirmed by the proxy.
+        $proxyCount = M3uProxyService::getActiveStreamsCountByMetadata(
+            'provider_profile_id',
+            (string) $profile->id
+        );
+
+        // Add in-flight reservations (streams being created, not yet in the proxy).
+        // Reservations are stored in the profile's stream set with a "reservation:" prefix.
+        $streamsKey = static::getProfileStreamsKey($profile);
+        $pendingCount = 0;
+
+        try {
+            $streamIds = Redis::smembers($streamsKey);
+            $pendingCount = count(array_filter($streamIds, fn ($id) => str_starts_with($id, 'reservation:')));
+        } catch (\Exception $e) {
+            Log::warning("Failed to count pending reservations for profile {$profile->id}", [
+                'exception' => $e->getMessage(),
+            ]);
+        }
+
+        return $proxyCount + $pendingCount;
     }
 
     /**
