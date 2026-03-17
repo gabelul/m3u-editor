@@ -539,14 +539,6 @@ class ProfileService
     }
 
     /**
-     * Get total active connections across all profiles for a playlist.
-     */
-    public static function getTotalActiveConnections(Playlist $playlist): int
-    {
-        return static::getPoolStatus($playlist)['total_active'];
-    }
-
-    /**
      * Get pool status summary for a playlist.
      *
      * Cached for 5 seconds to avoid hammering the proxy API on table renders.
