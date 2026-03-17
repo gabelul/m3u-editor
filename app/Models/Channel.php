@@ -294,7 +294,7 @@ class Channel extends Model
             if (! $this->is_vod) {
                 return false;
             }
-            $movieData = $xtream->getVodInfo($this->source_id);
+            $movieData = $xtream->getVodInfo($this->source_id, timeout: 60);
             $releaseDate = $movieData['info']['release_date'] ?? null;
             $releaseDateAlt = $movieData['info']['releasedate'] ?? null;
             $year = $this->year;
