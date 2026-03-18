@@ -10,6 +10,7 @@ use App\Jobs\RunPlaylistFindReplaceRules;
 use App\Jobs\RunPostProcess;
 use App\Models\Epg;
 use App\Models\Playlist;
+use App\Plugins\PluginHookDispatcher;
 use Filament\Notifications\Notification;
 use Throwable;
 
@@ -45,6 +46,15 @@ class SyncListener
                     $lastSync
                 ));
             });
+
+            if ($playlist->status === Status::Completed) {
+                app(PluginHookDispatcher::class)->dispatch('playlist.synced', [
+                    'playlist_id' => $playlist->id,
+                    'user_id' => $playlist->user_id,
+                ], [
+                    'user_id' => $playlist->user_id,
+                ]);
+            }
         }
         if ($event->model instanceof Epg) {
             $event->model->postProcesses()->where([
@@ -59,6 +69,13 @@ class SyncListener
 
             // Generate EPG cache if sync was successful
             if ($event->model->status === Status::Completed) {
+                app(PluginHookDispatcher::class)->dispatch('epg.synced', [
+                    'epg_id' => $event->model->id,
+                    'user_id' => $event->model->user_id,
+                ], [
+                    'user_id' => $event->model->user_id,
+                ]);
+
                 $this->postProcessEpg($event->model);
             }
         }

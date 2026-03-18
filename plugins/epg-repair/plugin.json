@@ -1,0 +1,141 @@
+{
+  "id": "epg-repair",
+  "name": "EPG Repair",
+  "version": "1.0.0",
+  "api_version": "1.0.0",
+  "description": "Scans playlist channels for missing or empty EPG mappings and suggests or applies repairs.",
+  "entrypoint": "Plugin.php",
+  "class": "AppLocalPlugins\\EpgRepair\\Plugin",
+  "capabilities": [
+    "epg_repair",
+    "scheduled"
+  ],
+  "hooks": [
+    "epg.cache.generated"
+  ],
+  "settings": [
+    {
+      "id": "auto_scan_on_epg_ready",
+      "label": "Auto Scan When EPG Cache Completes",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "id": "schedule_enabled",
+      "label": "Enable Scheduled Scans",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "id": "schedule_cron",
+      "label": "Schedule Cron",
+      "type": "text",
+      "default": "0 * * * *"
+    },
+    {
+      "id": "default_playlist_id",
+      "label": "Default Playlist",
+      "type": "model_select",
+      "model": "App\\Models\\Playlist",
+      "label_attribute": "name",
+      "scope": "owned"
+    },
+    {
+      "id": "default_epg_id",
+      "label": "Default EPG",
+      "type": "model_select",
+      "model": "App\\Models\\Epg",
+      "label_attribute": "name",
+      "scope": "owned"
+    },
+    {
+      "id": "hours_ahead",
+      "label": "Hours Ahead",
+      "type": "number",
+      "default": 12
+    },
+    {
+      "id": "confidence_threshold",
+      "label": "Confidence Threshold",
+      "type": "number",
+      "default": 0.65
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan",
+      "label": "Scan For Repairs",
+      "dry_run": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": true
+        },
+        {
+          "id": "epg_id",
+          "label": "EPG",
+          "type": "model_select",
+          "model": "App\\Models\\Epg",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": true
+        },
+        {
+          "id": "hours_ahead",
+          "label": "Hours Ahead",
+          "type": "number",
+          "default": 12
+        },
+        {
+          "id": "confidence_threshold",
+          "label": "Confidence Threshold",
+          "type": "number",
+          "default": 0.65
+        }
+      ]
+    },
+    {
+      "id": "apply",
+      "label": "Apply Repairs",
+      "requires_confirmation": true,
+      "destructive": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": true
+        },
+        {
+          "id": "epg_id",
+          "label": "EPG",
+          "type": "model_select",
+          "model": "App\\Models\\Epg",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": true
+        },
+        {
+          "id": "hours_ahead",
+          "label": "Hours Ahead",
+          "type": "number",
+          "default": 12
+        },
+        {
+          "id": "confidence_threshold",
+          "label": "Confidence Threshold",
+          "type": "number",
+          "default": 0.65
+        }
+      ]
+    }
+  ]
+}

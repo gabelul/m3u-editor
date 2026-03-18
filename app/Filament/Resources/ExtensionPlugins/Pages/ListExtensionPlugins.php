@@ -1,0 +1,32 @@
+<?php
+
+namespace App\Filament\Resources\ExtensionPlugins\Pages;
+
+use App\Filament\Resources\ExtensionPlugins\ExtensionPluginResource;
+use App\Plugins\PluginManager;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ListRecords;
+
+class ListExtensionPlugins extends ListRecords
+{
+    protected static string $resource = ExtensionPluginResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('discover')
+                ->label('Discover Plugins')
+                ->icon('heroicon-o-arrow-path')
+                ->action(function (): void {
+                    $plugins = app(PluginManager::class)->discover();
+
+                    Notification::make()
+                        ->success()
+                        ->title('Plugin discovery completed')
+                        ->body('Synced '.count($plugins).' plugin(s) into the registry.')
+                        ->send();
+                }),
+        ];
+    }
+}

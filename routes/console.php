@@ -67,4 +67,9 @@ Schedule::command('networks:regenerate-schedules')
     ->hourly()
     ->withoutOverlapping();
 
+// Run scheduled plugin invocations
+Schedule::command('plugins:run-scheduled')
+    ->everyMinute()
+    ->withoutOverlapping();
+
 // Note: HLS broadcast files are managed by m3u-proxy service
