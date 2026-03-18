@@ -168,6 +168,11 @@ echo $totalBandwidth > 1000 ? round($totalBandwidth / 1000, 1) . ' Mbps' : $tota
                                             Provider Profile: {{ $stream['provider_profile'] }}
                                         </span>
                                     @endif
+                                    @if($stream['alias_name'] ?? false)
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">
+                                            Alias: {{ $stream['alias_name'] }}
+                                        </span>
+                                    @endif
                                     @if($stream['broadcast'] ?? false)
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200 ml-2">
                                             Broadcast
