@@ -57,13 +57,8 @@ Schedule::command('m3u-proxy:register-webhook')
     ->everyFiveMinutes()
     ->withoutOverlapping();
 
-// Reconcile profile connection counts
-Schedule::command('profiles:reconcile')
-    ->everyFiveMinutes()
-    ->withoutOverlapping();
-
 // Refresh provider profile info (every 15 minutes)
-Schedule::job(new \App\Jobs\RefreshPlaylistProfiles)
+Schedule::command('app:refresh-playlist-profiles')
     ->everyFifteenMinutes()
     ->withoutOverlapping();
 

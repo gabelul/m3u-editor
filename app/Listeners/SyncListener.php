@@ -6,8 +6,10 @@ use App\Enums\Status;
 use App\Events\SyncCompleted;
 use App\Jobs\GenerateEpgCache;
 use App\Jobs\MergeChannels;
+use App\Jobs\RunPlaylistFindReplaceRules;
 use App\Jobs\RunPostProcess;
 use App\Models\Epg;
+use App\Models\Playlist;
 use Filament\Notifications\Notification;
 use Throwable;
 
@@ -18,13 +20,18 @@ class SyncListener
      */
     public function handle(SyncCompleted $event): void
     {
-        if ($event->model instanceof \App\Models\Playlist) {
+        if ($event->model instanceof Playlist) {
             $playlist = $event->model;
             $lastSync = $playlist->syncStatuses()->first();
 
             // Handle auto-merge channels if enabled
             if ($playlist->auto_merge_channels_enabled && $playlist->status === Status::Completed) {
                 $this->handleAutoMergeChannels($playlist);
+            }
+
+            // Handle saved find & replace rules
+            if ($playlist->status === Status::Completed && collect($playlist->find_replace_rules ?? [])->contains(fn ($r) => $r['enabled'] ?? false)) {
+                dispatch(new RunPlaylistFindReplaceRules($playlist));
             }
 
             // Handle post-processes
@@ -39,7 +46,7 @@ class SyncListener
                 ));
             });
         }
-        if ($event->model instanceof \App\Models\Epg) {
+        if ($event->model instanceof Epg) {
             $event->model->postProcesses()->where([
                 ['event', 'synced'],
                 ['enabled', true],

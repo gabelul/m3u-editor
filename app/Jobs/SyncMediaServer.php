@@ -17,18 +17,19 @@ use App\Services\MediaServerService;
 use App\Services\TmdbService;
 use Exception;
 use Filament\Notifications\Notification;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
- * SyncMediaServer Job - The "Engine" for Emby/Jellyfin sync
+ * SyncMediaServer Job - The "Engine" for Emby/Jellyfin/Plex sync
  *
  * Fetches content from a media server and syncs it into the M3U Editor's
  * standard tables (playlists, groups, channels, categories, series, episodes).
  */
-class SyncMediaServer implements ShouldQueue
+class SyncMediaServer implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
@@ -51,6 +52,12 @@ class SyncMediaServer implements ShouldQueue
         'episodes_synced' => 0,
         'groups_created' => 0,
         'categories_created' => 0,
+        'movies_removed' => 0,
+        'series_removed' => 0,
+        'episodes_removed' => 0,
+        'seasons_removed' => 0,
+        'groups_removed' => 0,
+        'categories_removed' => 0,
         'errors' => [],
     ];
 
@@ -60,12 +67,25 @@ class SyncMediaServer implements ShouldQueue
     protected string $batchNo;
 
     /**
+     * The number of seconds after which the job's unique lock will be released.
+     */
+    public int $uniqueFor = 1800;
+
+    /**
      * Create a new job instance.
      */
     public function __construct(
         public int $integrationId,
     ) {
         $this->batchNo = Str::orderedUuid()->toString();
+    }
+
+    /**
+     * Get the unique ID for this job (prevents duplicate syncs for the same integration).
+     */
+    public function uniqueId(): string
+    {
+        return 'sync-media-server-'.$this->integrationId;
     }
 
     /**
@@ -130,6 +150,9 @@ class SyncMediaServer implements ShouldQueue
                 $this->syncSeries($integration, $playlist, $service);
             }
 
+            // Remove stale records no longer present on the media server
+            $this->cleanupStaleRecords($integration, $playlist);
+
             // Update integration with sync stats
             $integration->update([
                 'status' => 'completed',
@@ -150,7 +173,7 @@ class SyncMediaServer implements ShouldQueue
             // Send success notification
             $body = "Synced {$this->stats['movies_synced']} movies and {$this->stats['series_synced']} series from {$integration->name}";
 
-            if ($integration->isLocal() && $this->stats['series_synced'] === 0 && $service instanceof \App\Services\LocalMediaService) {
+            if ($integration->usesLocalPathConfig() && $this->stats['series_synced'] === 0 && $service instanceof \App\Services\LocalMediaService) {
                 $flatWarnings = $service->getSeriesPathWarnings();
 
                 if (! empty($flatWarnings)) {
@@ -221,12 +244,12 @@ class SyncMediaServer implements ShouldQueue
             'emby' => PlaylistSourceType::Emby,
             'jellyfin' => PlaylistSourceType::Jellyfin,
             'plex' => PlaylistSourceType::Plex,
-            'local' => PlaylistSourceType::LocalMedia,
+            'local', 'webdav' => PlaylistSourceType::LocalMedia,
             default => PlaylistSourceType::M3u,
         };
 
         // Determine URL for reference
-        $url = $integration->isLocal()
+        $url = $integration->usesLocalPathConfig()
             ? 'local://'.$integration->name
             : $integration->base_url;
 
@@ -240,22 +263,7 @@ class SyncMediaServer implements ShouldQueue
             'status' => Status::Processing,
             'auto_sync' => false, // Sync is managed by the integration, not the playlist
             'user_agent' => 'M3U-Editor-MediaServer-Sync/1.0', // required value for playlist, set to something meaningful
-        ]);
-
-        // Link the playlist to the integration
-        $integration->update(['playlist_id' => $playlist->id]);
-
-        return $playlist;
-        // Create a new playlist for this integration
-        $playlist = Playlist::createQuietly([
-            'uuid' => Str::orderedUuid()->toString(),
-            'name' => $integration->name,
-            'url' => $url,
-            'user_id' => $integration->user_id,
-            'source_type' => $integration->type,
-            'status' => Status::Processing,
-            'auto_sync' => false, // Sync is managed by the integration, not the playlist
-            'user_agent' => 'M3U-Editor-MediaServer-Sync/1.0', // required value for playlist, set to something meaningful
+            'id_channel_by' => 'stream_id', // Required field for playlist, set to stream_id to ensure consistent channel matching based on source_id
         ]);
 
         // Link the playlist to the integration
@@ -398,8 +406,16 @@ class SyncMediaServer implements ShouldQueue
             $existingInfo = $channel->info ?? [];
             $info = $existingInfo;
 
+            // Fields that should be preserved when TMDB has enriched them
+            $tmdbProtectedKeys = ['genre'];
+
             // Only overwrite fields from sync if they have meaningful (non-empty) values
             foreach ($syncInfo as $key => $value) {
+                // Skip TMDB-protected fields on existing channels that have been enriched
+                if (in_array($key, $tmdbProtectedKeys) && $channel->last_metadata_fetch !== null && isset($existingInfo[$key]) && $existingInfo[$key] !== $value) {
+                    continue;
+                }
+
                 if ($value !== '' && $value !== null && $value !== []) {
                     $info[$key] = $value;
                 } elseif (! isset($info[$key])) {
@@ -409,15 +425,20 @@ class SyncMediaServer implements ShouldQueue
             }
         }
 
+        // For existing channels that have been TMDB-enriched, preserve the TMDB group/genre
+        // instead of overwriting with the library folder name (e.g., "Movies")
+        $hasTmdbGroup = ! $isNew && $channel->last_metadata_fetch !== null
+            && ! empty($channel->group) && $channel->group !== $group->name;
+
         $channel->fill([
             'name' => $movie['Name'],
             'title' => $movie['Name'],
             'url' => $streamUrl,
             'logo' => ($isNew || ! empty($imageUrl)) ? $imageUrl : $channel->logo,
             'logo_internal' => ($isNew || ! empty($imageUrl)) ? $imageUrl : $channel->logo_internal,
-            'group' => $group->name,
-            'group_internal' => $group->name,
-            'group_id' => $group->id,
+            'group' => $hasTmdbGroup ? $channel->group : $group->name,
+            'group_internal' => $hasTmdbGroup ? $channel->group_internal : $group->name,
+            'group_id' => $hasTmdbGroup ? $channel->group_id : $group->id,
             'user_id' => $playlist->user_id,
             'enabled' => true,
             'is_vod' => true,
@@ -428,10 +449,11 @@ class SyncMediaServer implements ShouldQueue
             'info' => $info,
         ]);
 
-        // Only reset last_metadata_fetch for new local media channels (existing ones keep their timestamp)
-        if ($isNew && $integration->isLocal()) {
+        // Only reset last_metadata_fetch for new local-style media channels (existing ones keep their timestamp)
+        // For non-local-style (Emby/Jellyfin/Plex), set to now() so FetchTmdbIds skips them (they already have metadata)
+        if ($isNew && $integration->usesLocalPathConfig()) {
             $channel->last_metadata_fetch = null;
-        } elseif (! $integration->isLocal()) {
+        } elseif (! $integration->usesLocalPathConfig()) {
             $channel->last_metadata_fetch = now();
         }
 
@@ -454,8 +476,11 @@ class SyncMediaServer implements ShouldQueue
                 'user_id' => $playlist->user_id,
                 'playlist_id' => $playlist->id,
                 'type' => 'vod',
+                'import_batch_no' => $this->batchNo,
             ]);
             $this->stats['groups_created']++;
+        } else {
+            $group->update(['import_batch_no' => $this->batchNo]);
         }
 
         return $group;
@@ -586,16 +611,23 @@ class SyncMediaServer implements ShouldQueue
         $syncCast = ! empty($actors) ? implode(', ', $actors) : null;
         $syncDirector = ! empty($directors) ? implode(', ', $directors) : null;
 
+        // For existing series that have been TMDB-enriched, preserve the TMDB genre/category
+        // instead of overwriting with the library folder name (e.g., "tv")
+        $hasTmdbGenre = ! $isNewSeries && $series->last_metadata_fetch !== null
+            && ! empty($series->genre) && $series->genre !== implode(', ', $genres);
+
         $series->fill([
             'name' => $seriesData['Name'],
             'user_id' => $playlist->user_id,
-            'category_id' => $category->id,
-            'source_category_id' => $category->source_category_id ?? $category->id,
+            'category_id' => $hasTmdbGenre ? $series->category_id : $category->id,
+            'source_category_id' => $hasTmdbGenre
+                ? ($series->source_category_id ?? $series->category_id)
+                : ($category->source_category_id ?? $category->id),
             'import_batch_no' => $this->batchNo,
             'enabled' => true,
             'cover' => ($isNewSeries || ! empty($syncCover)) ? $syncCover : $series->cover,
             'plot' => ($isNewSeries || ! empty($syncPlot)) ? $syncPlot : $series->plot,
-            'genre' => implode(', ', $genres),
+            'genre' => $hasTmdbGenre ? $series->genre : implode(', ', $genres),
             'release_date' => $seriesData['PremiereDate'] ?? $seriesData['ProductionYear'] ?? null,
             'cast' => ($isNewSeries || ! empty($syncCast)) ? $syncCast : $series->cast,
             'director' => ($isNewSeries || ! empty($syncDirector)) ? $syncDirector : $series->director,
@@ -613,10 +645,11 @@ class SyncMediaServer implements ShouldQueue
             ],
         ]);
 
-        // Only reset last_metadata_fetch for new local media series (existing ones keep their timestamp)
-        if ($isNewSeries && $integration->isLocal()) {
+        // Only reset last_metadata_fetch for new local-style media series (existing ones keep their timestamp)
+        // For non-local-style (Emby/Jellyfin/Plex), set to now() so FetchTmdbIds skips them (they already have metadata)
+        if ($isNewSeries && $integration->usesLocalPathConfig()) {
             $series->last_metadata_fetch = null;
-        } elseif ($isNewSeries || ! $integration->isLocal()) {
+        } elseif ($isNewSeries || ! $integration->usesLocalPathConfig()) {
             $series->last_metadata_fetch = now();
         }
 
@@ -756,11 +789,88 @@ class SyncMediaServer implements ShouldQueue
                 'name_internal' => $genreName,
                 'user_id' => $playlist->user_id,
                 'playlist_id' => $playlist->id,
+                'import_batch_no' => $this->batchNo,
             ]);
             $this->stats['categories_created']++;
+        } else {
+            $category->update(['import_batch_no' => $this->batchNo]);
         }
 
         return $category;
+    }
+
+    /**
+     * Remove stale records that were not touched during this sync.
+     *
+     * Any record with an import_batch_no different from the current batch
+     * was not present on the media server and should be removed.
+     */
+    protected function cleanupStaleRecords(
+        MediaServerIntegration $integration,
+        Playlist $playlist
+    ): void {
+        // Remove stale episodes (must be deleted before seasons/series to avoid FK issues)
+        if ($integration->import_series) {
+            $staleEpisodes = Episode::where('playlist_id', $playlist->id)
+                ->where('import_batch_no', '!=', $this->batchNo);
+            $this->stats['episodes_removed'] = $staleEpisodes->count();
+            $staleEpisodes->delete();
+
+            // Remove stale seasons
+            $staleSeasons = Season::where('playlist_id', $playlist->id)
+                ->where('import_batch_no', '!=', $this->batchNo);
+            $this->stats['seasons_removed'] = $staleSeasons->count();
+            $staleSeasons->delete();
+
+            // Remove stale series
+            $staleSeries = Series::where('playlist_id', $playlist->id)
+                ->where('import_batch_no', '!=', $this->batchNo);
+            $this->stats['series_removed'] = $staleSeries->count();
+            $staleSeries->delete();
+
+            // Remove stale categories (only those with no remaining series)
+            $staleCategories = Category::where('playlist_id', $playlist->id)
+                ->where('import_batch_no', '!=', $this->batchNo)
+                ->whereDoesntHave('series');
+            $this->stats['categories_removed'] = $staleCategories->count();
+            $staleCategories->delete();
+        }
+
+        // Remove stale channels (movies)
+        if ($integration->import_movies) {
+            $staleChannels = Channel::where('playlist_id', $playlist->id)
+                ->where('is_custom', false)
+                ->where('import_batch_no', '!=', $this->batchNo);
+            $this->stats['movies_removed'] = $staleChannels->count();
+            $staleChannels->delete();
+
+            // Remove stale groups (only those with no remaining channels)
+            $staleGroups = Group::where('playlist_id', $playlist->id)
+                ->where('custom', false)
+                ->where('import_batch_no', '!=', $this->batchNo)
+                ->whereDoesntHave('channels');
+            $this->stats['groups_removed'] = $staleGroups->count();
+            $staleGroups->delete();
+        }
+
+        $totalRemoved = $this->stats['movies_removed']
+            + $this->stats['series_removed']
+            + $this->stats['episodes_removed']
+            + $this->stats['seasons_removed']
+            + $this->stats['groups_removed']
+            + $this->stats['categories_removed'];
+
+        if ($totalRemoved > 0) {
+            Log::info('SyncMediaServer: Cleaned up stale records', [
+                'integration_id' => $integration->id,
+                'movies_removed' => $this->stats['movies_removed'],
+                'series_removed' => $this->stats['series_removed'],
+                'episodes_removed' => $this->stats['episodes_removed'],
+                'seasons_removed' => $this->stats['seasons_removed'],
+                'groups_removed' => $this->stats['groups_removed'],
+                'categories_removed' => $this->stats['categories_removed'],
+            ]);
+        }
     }
 
     /**
@@ -827,7 +937,7 @@ class SyncMediaServer implements ShouldQueue
         MediaServerIntegration $integration,
         Playlist $playlist
     ): void {
-        if (! $integration->isLocal()) {
+        if (! $integration->usesLocalPathConfig()) {
             return;
         }
 
@@ -864,7 +974,7 @@ class SyncMediaServer implements ShouldQueue
             return;
         }
 
-        Log::info('SyncMediaServer: Dispatching TMDB metadata lookup for local media', [
+        Log::info('SyncMediaServer: Dispatching TMDB metadata lookup for local-style media', [
             'integration_id' => $integration->id,
             'playlist_id' => $playlist->id,
             'movies_synced' => $this->stats['movies_synced'],

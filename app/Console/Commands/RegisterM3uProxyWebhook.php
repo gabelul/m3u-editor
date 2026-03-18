@@ -35,13 +35,19 @@ class RegisterM3uProxyWebhook extends Command
         // because m3u-proxy needs to call back to Laravel, not to itself
         $webhookUrl = $service->getWebhookUrl();
 
+        if (! $webhookUrl) {
+            $this->info('ℹ️  Proxy resolver URL is not configured. Skipping webhook registration.');
+
+            return self::SUCCESS;
+        }
+
         $this->info("Webhook URL: {$webhookUrl}");
 
         try {
-            $publicUrl = $service->getPublicUrl();
+            $apiBaseUrl = $service->getApiBaseUrl();
 
             // Check if webhook already exists
-            $listEndpoint = $publicUrl.'/webhooks';
+            $listEndpoint = $apiBaseUrl.'/webhooks';
             $listResponse = Http::timeout(5)->acceptJson()
                 ->withHeaders([
                     'X-API-Token' => $service->getApiToken(),

@@ -16,6 +16,7 @@ use App\Models\ChannelFailover;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
 use App\Models\Playlist;
+use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\PlaylistService;
 use App\Traits\HasUserFiltering;
@@ -350,7 +351,9 @@ class ChannelResource extends Resource
                 ->label('Default URL')
                 ->sortable()
                 ->searchable(query: function (Builder $query, string $search): Builder {
-                    return $query->orWhereRaw('LOWER(channels.url::text) LIKE ?', ['%'.strtolower($search).'%']);
+                    $urlExpr = DB::getDriverName() === 'sqlite' ? 'channels.url' : 'channels.url::text';
+
+                    return $query->orWhereRaw("LOWER({$urlExpr}) LIKE ?", ['%'.strtolower($search).'%']);
                 })
                 ->toggleable(isToggledHiddenByDefault: true),
 
@@ -733,9 +736,30 @@ class ChannelResource extends Resource
                     ->modalSubmitActionLabel('Map now'),
                 BulkAction::make('unmap')
                     ->label('Undo EPG Map')
-                    ->action(function (Collection $records, array $data): void {
-                        Channel::whereIn('id', $records->pluck('id')->toArray())
+                    ->action(function (Collection $records): void {
+                        // Clear the EPG mapping
+                        Channel::whereIn('id', $records->pluck('id'))
                             ->update(['epg_channel_id' => null]);
+
+                        // Invalidate cached EPG XML for all playlists containing these channels
+                        // (regular, custom, and merged) so Xtream API clients receive updated
+                        // XMLTV data immediately instead of waiting for the cache TTL to expire
+                        $records->loadMissing(['playlist.mergedPlaylists', 'customPlaylists']);
+
+                        $affectedPlaylists = collect();
+                        foreach ($records as $channel) {
+                            if ($channel->playlist) {
+                                $affectedPlaylists->push($channel->playlist);
+                                foreach ($channel->playlist->mergedPlaylists as $merged) {
+                                    $affectedPlaylists->push($merged);
+                                }
+                            }
+                            foreach ($channel->customPlaylists as $custom) {
+                                $affectedPlaylists->push($custom);
+                            }
+                        }
+                        $affectedPlaylists->unique(fn ($p) => $p->getTable().'-'.$p->id)
+                            ->each(fn ($p) => EpgCacheService::clearPlaylistEpgCacheFile($p));
                     })->after(function () {
                         Notification::make()
                             ->success()
@@ -751,38 +775,73 @@ class ChannelResource extends Resource
                     ->modalSubmitActionLabel('Reset now'),
                 BulkAction::make('find-replace')
                     ->label('Find & Replace')
-                    ->schema([
-                        Toggle::make('use_regex')
-                            ->label('Use Regex')
-                            ->live()
-                            ->helperText('Use regex patterns to find and replace. If disabled, will use direct string comparison.')
-                            ->default(true),
-                        Select::make('column')
-                            ->label('Column to modify')
-                            ->options([
-                                'title' => 'Channel Title',
-                                'name' => 'Channel Name (tvg-name)',
-                            ])
-                            ->default('title')
-                            ->required()
-                            ->columnSpan(1),
-                        TextInput::make('find_replace')
-                            ->label(fn (Get $get) => ! $get('use_regex') ? 'String to replace' : 'Pattern to replace')
-                            ->required()
-                            ->placeholder(
-                                fn (Get $get) => $get('use_regex')
-                                    ? '^(US- |UK- |CA- )'
-                                    : 'US -'
-                            )->helperText(
-                                fn (Get $get) => ! $get('use_regex')
-                                    ? 'This is the string you want to find and replace.'
-                                    : 'This is the regex pattern you want to find. Make sure to use valid regex syntax.'
-                            ),
-                        TextInput::make('replace_with')
-                            ->label('Replace with (optional)')
-                            ->placeholder('Leave empty to remove'),
+                    ->schema(function (): array {
+                        $savedPatterns = [];
+                        $savedPatternRules = [];
+                        $counter = 0;
+                        foreach (Playlist::where('user_id', auth()->id())->get() as $playlist) {
+                            foreach ($playlist->find_replace_rules ?? [] as $rule) {
+                                if (is_array($rule) && ($rule['target'] ?? 'channels') === 'channels') {
+                                    $savedPatterns[$counter] = "{$playlist->name} - ".($rule['name'] ?? 'Unnamed');
+                                    $savedPatternRules[$counter] = $rule;
+                                    $counter++;
+                                }
+                            }
+                        }
 
-                    ])
+                        return [
+                            Select::make('saved_pattern')
+                                ->label('Load saved pattern')
+                                ->searchable()
+                                ->placeholder('Select a saved pattern...')
+                                ->options($savedPatterns)
+                                ->hidden(empty($savedPatterns))
+                                ->live()
+                                ->afterStateUpdated(function (?string $state, Set $set) use ($savedPatternRules): void {
+                                    if ($state === null || $state === '') {
+                                        return;
+                                    }
+                                    $rule = $savedPatternRules[(int) $state] ?? null;
+                                    if (! $rule) {
+                                        return;
+                                    }
+                                    $set('use_regex', $rule['use_regex'] ?? true);
+                                    $set('column', $rule['column'] ?? 'title');
+                                    $set('find_replace', $rule['find_replace'] ?? '');
+                                    $set('replace_with', $rule['replace_with'] ?? '');
+                                })
+                                ->dehydrated(false),
+                            Toggle::make('use_regex')
+                                ->label('Use Regex')
+                                ->live()
+                                ->helperText('Use regex patterns to find and replace. If disabled, will use direct string comparison.')
+                                ->default(true),
+                            Select::make('column')
+                                ->label('Column to modify')
+                                ->options([
+                                    'title' => 'Channel Title',
+                                    'name' => 'Channel Name (tvg-name)',
+                                ])
+                                ->default('title')
+                                ->required()
+                                ->columnSpan(1),
+                            TextInput::make('find_replace')
+                                ->label(fn (Get $get) => ! $get('use_regex') ? 'String to replace' : 'Pattern to replace')
+                                ->required()
+                                ->placeholder(
+                                    fn (Get $get) => $get('use_regex')
+                                        ? '^(US- |UK- |CA- )'
+                                        : 'US -'
+                                )->helperText(
+                                    fn (Get $get) => ! $get('use_regex')
+                                        ? 'This is the string you want to find and replace.'
+                                        : 'This is the regex pattern you want to find. Make sure to use valid regex syntax.'
+                                ),
+                            TextInput::make('replace_with')
+                                ->label('Replace with (optional)')
+                                ->placeholder('Leave empty to remove'),
+                        ];
+                    })
                     ->action(function (Collection $records, array $data): void {
                         app('Illuminate\Contracts\Bus\Dispatcher')
                             ->dispatch(new ChannelFindAndReplace(

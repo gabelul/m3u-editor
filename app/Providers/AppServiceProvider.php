@@ -22,6 +22,7 @@ use App\Models\MergedPlaylist;
 use App\Models\Network;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
+use App\Models\PlaylistViewer;
 use App\Models\StreamFileSetting;
 use App\Models\StreamProfile;
 use App\Models\User;
@@ -317,8 +318,21 @@ class AppServiceProvider extends ServiceProvider
     private function ensureJobsTableExists(): void
     {
         try {
-            if (! Schema::connection('jobs')->hasTable('jobs')) {
-                Schema::connection('jobs')->create('jobs', function (Blueprint $table) {
+            $connection = Schema::connection('jobs');
+            $hasTable = $connection->hasTable('jobs');
+
+            // If the table exists, verify it has the correct schema.
+            // The Laravel default queue migration (0001_01_01_000002) can create a
+            // wrong-schema 'jobs' table when `php artisan migrate --database=jobs`
+            // runs. Detect this by checking for our custom 'title' column.
+            if ($hasTable && ! $connection->hasColumn('jobs', 'title')) {
+                Log::warning('Jobs table has wrong schema (missing "title" column), recreating with correct schema');
+                $connection->dropIfExists('jobs');
+                $hasTable = false;
+            }
+
+            if (! $hasTable) {
+                $connection->create('jobs', function (Blueprint $table) {
                     $table->id();
                     $table->string('title');
                     $table->string('batch_no');
@@ -424,6 +438,11 @@ class AppServiceProvider extends ServiceProvider
                 event(new PlaylistDeleted($playlist));
                 $playlist->postProcesses()->detach();
 
+                // Delete associated viewers (watch progress cascades via FK)
+                PlaylistViewer::where('viewerable_type', Playlist::class)
+                    ->where('viewerable_id', $playlist->id)
+                    ->delete();
+
                 return $playlist;
             });
 
@@ -487,6 +506,11 @@ class AppServiceProvider extends ServiceProvider
                 // Remove short URLs
                 $mergedPlaylist->removeShortUrls();
 
+                // Delete associated viewers (watch progress cascades via FK)
+                PlaylistViewer::where('viewerable_type', MergedPlaylist::class)
+                    ->where('viewerable_id', $mergedPlaylist->id)
+                    ->delete();
+
                 return $mergedPlaylist;
             });
 
@@ -530,6 +554,11 @@ class AppServiceProvider extends ServiceProvider
                 Tag::query()
                     ->where('type', $customPlaylist->uuid)
                     ->orWhere('type', $customPlaylist->uuid.'-category')
+                    ->delete();
+
+                // Delete associated viewers (watch progress cascades via FK)
+                PlaylistViewer::where('viewerable_type', CustomPlaylist::class)
+                    ->where('viewerable_id', $customPlaylist->id)
                     ->delete();
 
                 return $customPlaylist;
@@ -595,6 +624,11 @@ class AppServiceProvider extends ServiceProvider
                 // Remove short URLs
                 $playlistAlias->removeShortUrls();
 
+                // Delete associated viewers (watch progress cascades via FK)
+                PlaylistViewer::where('viewerable_type', PlaylistAlias::class)
+                    ->where('viewerable_id', $playlistAlias->id)
+                    ->delete();
+
                 return $playlistAlias;
             });
 
@@ -652,6 +686,30 @@ class AppServiceProvider extends ServiceProvider
 
                 return $setting;
             });
+
+            // Auto-create Admin PlaylistViewer on new playlist/alias creation
+            $autoCreateAdminViewer = function ($record) {
+                $adminEmail = config('dev.admin_emails')[0] ?? null;
+                if (! $adminEmail) {
+                    return;
+                }
+                $adminUser = User::where('email', $adminEmail)->first();
+                if (! $adminUser) {
+                    return;
+                }
+                PlaylistViewer::create([
+                    'ulid' => (string) Str::ulid(),
+                    'name' => $adminUser->name,
+                    'is_admin' => true,
+                    'viewerable_type' => get_class($record),
+                    'viewerable_id' => $record->id,
+                ]);
+            };
+
+            Playlist::created($autoCreateAdminViewer);
+            CustomPlaylist::created($autoCreateAdminViewer);
+            MergedPlaylist::created($autoCreateAdminViewer);
+            PlaylistAlias::created($autoCreateAdminViewer);
 
             // ...
 

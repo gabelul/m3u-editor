@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Support\Facades\Cache;
 
@@ -51,11 +52,14 @@ class Playlist extends Model
         'auto_merge_channels_enabled' => 'boolean',
         'auto_merge_deactivate_failover' => 'boolean',
         'auto_merge_config' => 'array',
+        'find_replace_rules' => 'array',
         'emby_config' => 'array',
         'custom_headers' => 'array',
         'strict_live_ts' => 'boolean',
         'use_sticky_session' => 'boolean',
         'profiles_enabled' => 'boolean',
+        'bypass_provider_limits' => 'boolean',
+        'enable_provider_affinity' => 'boolean',
         'is_network_playlist' => 'boolean',
         'status' => Status::class,
         'id_channel_by' => PlaylistChannelId::class,
@@ -96,6 +100,21 @@ class Playlist extends Model
         return $this->processing['series_processing'] ?? false;
     }
 
+    /**
+     * Returns true if this playlist is backed by a media server integration
+     * (Emby, Jellyfin, Plex, LocalMedia). Standard playlists (m3u, xtream, local, null)
+     * return false.
+     */
+    public function isMediaServerPlaylist(): bool
+    {
+        return in_array($this->source_type, [
+            PlaylistSourceType::Emby,
+            PlaylistSourceType::Jellyfin,
+            PlaylistSourceType::Plex,
+            PlaylistSourceType::LocalMedia,
+        ]);
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
@@ -107,14 +126,6 @@ class Playlist extends Model
     public function mediaServerIntegration(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(MediaServerIntegration::class);
-    }
-
-    /**
-     * Check if this playlist belongs to a media server integration.
-     */
-    public function isMediaServerPlaylist(): bool
-    {
-        return $this->mediaServerIntegration()->exists();
     }
 
     /**
@@ -272,6 +283,11 @@ class Playlist extends Model
     public function episodes(): HasMany
     {
         return $this->hasMany(Episode::class);
+    }
+
+    public function playlistViewers(): MorphMany
+    {
+        return $this->morphMany(PlaylistViewer::class, 'viewerable');
     }
 
     public function aliases(): HasMany

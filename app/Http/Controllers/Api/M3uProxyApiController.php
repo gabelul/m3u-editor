@@ -118,7 +118,8 @@ class M3uProxyApiController extends Controller
                 $playlist,
                 $episode,
                 $profile,
-                $username
+                $username,
+                $request
             );
 
         return redirect($url);
@@ -220,7 +221,9 @@ class M3uProxyApiController extends Controller
             ->getEpisodeUrl(
                 $playlist,
                 $episode,
-                $profile
+                $profile,
+                null,
+                $request
             );
 
         return redirect($url);
@@ -355,16 +358,13 @@ class M3uProxyApiController extends Controller
                 return;
             }
 
-            // Only decrement on stream_stopped events
-            // This ensures we decrement exactly once per stream, avoiding race conditions
+            // Only clean up on stream_stopped events
             if ($eventType === 'stream_stopped') {
                 ProfileService::decrementConnections($profile, $streamId);
 
-                Log::debug('Decremented profile connections via webhook', [
+                Log::debug('Cleaned up stream tracking via webhook', [
                     'profile_id' => $profileId,
                     'stream_id' => $streamId,
-                    'event_type' => $eventType,
-                    'new_count' => ProfileService::getConnectionCount($profile),
                 ]);
             }
         } catch (Exception $e) {
@@ -469,6 +469,9 @@ class M3uProxyApiController extends Controller
             'duration_streamed' => $durationStreamed,
         ]);
 
+        // Clean up Plex transcode session before transitioning to next programme
+        $service->cleanupTranscodeSession($network);
+
         // Update segment sequence for next programme
         $network->update([
             'broadcast_segment_sequence' => $finalSegment + 1,
@@ -477,6 +480,9 @@ class M3uProxyApiController extends Controller
             'broadcast_programme_id' => null,
             'broadcast_initial_offset_seconds' => null,
             'broadcast_error' => null,
+            'broadcast_fail_count' => 0,
+            'broadcast_last_exit_code' => null,
+            'broadcast_transcode_session_id' => null,
         ]);
 
         // Increment discontinuity sequence for transition
@@ -504,45 +510,235 @@ class M3uProxyApiController extends Controller
     }
 
     /**
-     * Handle broadcast failed callback - attempt recovery.
+     * Handle broadcast failed callback - attempt recovery with exit code awareness.
+     *
+     * Fatal exit codes (no retry):
+     *   127 = command not found (ffmpeg binary missing)
+     *   126 = permission denied on binary
+     *   125 = command itself fails (e.g. bad container setup)
+     *
+     * Transient exit codes (retry with backoff):
+     *   8  = generic FFmpeg error (often stream negotiation failure)
+     *   1  = generic error
+     *   69 = service unavailable
+     *   -1 = unknown / not reported
+     *
+     * Max retries: 5 with exponential backoff (10s, 20s, 40s, 80s, 120s).
+     * For 5XX server errors: longer base (15s, 30s, 60s, 120s, 120s).
      */
     protected function handleBroadcastFailed(Network $network, array $data, NetworkBroadcastService $service): void
     {
         $error = $data['error'] ?? 'Unknown error';
         $exitCode = $data['exit_code'] ?? -1;
         $finalSegment = $data['final_segment_number'] ?? 0;
+        $errorType = $data['error_type'] ?? null;
+
+        // The proxy sends TWO callbacks per FFmpeg failure:
+        // 1. Primary: contains exit_code and final_segment_number (the real FFmpeg exit)
+        // 2. Detail: contains error_type="input_error" (supplementary error context)
+        // Only the primary callback should drive retry logic and increment fail_count.
+        // The detail callback is logged for observability but otherwise ignored.
+        $isDetailCallback = $errorType === 'input_error';
+
+        $isFatal = in_array($exitCode, [125, 126, 127], true);
+        $isBootRecovery = $network->broadcast_boot_recovery_until && now()->lt($network->broadcast_boot_recovery_until);
 
         Log::warning('Broadcast failed via proxy', [
             'network_id' => $network->id,
             'network_name' => $network->name,
             'error' => $error,
             'exit_code' => $exitCode,
+            'fatal' => $isFatal,
             'final_segment' => $finalSegment,
+            'boot_recovery' => $isBootRecovery,
+            'detail_only' => $isDetailCallback,
         ]);
 
-        // Update network state with error
+        // Detail callbacks (error_type=input_error) are supplementary context from the
+        // proxy — e.g. "Server returned 400 Bad Request". They arrive alongside the
+        // primary callback that has the real exit_code. Only update the error message
+        // for observability; do not modify fail_count or trigger retry logic.
+        if ($isDetailCallback) {
+            $network->update([
+                'broadcast_error' => $error,
+            ]);
+
+            return;
+        }
+
+        // During boot recovery, the tick loop is the sole retry mechanism. The callback
+        // handler must NOT increment fail_count or modify retry state because the tick
+        // loop retries unconditionally every tick during the grace period.
+        // We only update the error message for observability, preserving all other state.
+        if ($isBootRecovery) {
+            $network->update([
+                'broadcast_error' => $error,
+                'broadcast_last_exit_code' => $exitCode,
+            ]);
+
+            Log::info('Boot recovery: skipping callback state changes — tick loop handles retries', [
+                'network_id' => $network->id,
+                'exit_code' => $exitCode,
+                'grace_period_until' => $network->broadcast_boot_recovery_until->toIso8601String(),
+            ]);
+
+            return;
+        }
+
+        $failCount = ($network->broadcast_fail_count ?? 0) + 1;
+        $maxRetries = 5;
+
+        // Clean up Plex transcode session (the old session is dead, free the slot)
+        $service->cleanupTranscodeSession($network);
+
+        // Update network state with error and retry tracking
         $network->update([
             'broadcast_segment_sequence' => max($finalSegment, $network->broadcast_segment_sequence ?? 0),
             'broadcast_started_at' => null,
             'broadcast_pid' => null,
             'broadcast_error' => $error,
-            // Keep programme reference for recovery
+            'broadcast_fail_count' => $failCount,
+            'broadcast_last_failed_at' => now(),
+            'broadcast_last_exit_code' => $exitCode,
+            'broadcast_transcode_session_id' => null,
         ]);
 
-        // Attempt restart if broadcast was requested and programme is still valid
+        // Add explanatory text for common scenarios
+        $integration = $network->mediaServerIntegration;
+        if ($integration && $integration->isPlex() && $exitCode === 8) {
+            // Check if this might be a recent boot recovery issue
+            $recentBootRecovery = $network->broadcast_boot_recovery_until &&
+                $network->broadcast_boot_recovery_until->diffInMinutes(now()) < 10;
+
+            if ($recentBootRecovery) {
+                $additionalInfo = ' — If the container just rebooted, Plex may still be releasing the previous transcode session. This is normal and will be retried automatically.';
+            } else {
+                $additionalInfo = ' — Plex returned 400 Bad Request, likely due to an orphaned transcode session. Will retry with backoff.';
+            }
+
+            // Update error message with additional context
+            $network->update([
+                'broadcast_error' => $error.$additionalInfo,
+            ]);
+        }
+
+        // Fatal exit code — stop retrying entirely
+        if ($isFatal) {
+            Log::error('Broadcast failed with fatal exit code — stopping retries', [
+                'network_id' => $network->id,
+                'exit_code' => $exitCode,
+                'error' => $error,
+            ]);
+
+            $network->update([
+                'broadcast_requested' => false,
+                'broadcast_error' => "Fatal error (exit code {$exitCode}): {$error}. Retries disabled — check your m3u-proxy container.",
+            ]);
+
+            return;
+        }
+
+        // Max retries exceeded — stop retrying
+        if ($failCount >= $maxRetries) {
+            Log::error('Broadcast exceeded max retries — stopping', [
+                'network_id' => $network->id,
+                'fail_count' => $failCount,
+                'max_retries' => $maxRetries,
+                'last_exit_code' => $exitCode,
+            ]);
+
+            // Build error message with context
+            $errorMessage = "Failed after {$failCount} retries (last exit code {$exitCode}): {$error}";
+
+            // Add explanatory text for common scenarios
+            $integration = $network->mediaServerIntegration;
+            if ($integration && $integration->isPlex() && $exitCode === 8) {
+                // Check if this might be a recent boot recovery issue
+                $recentBootRecovery = $network->broadcast_boot_recovery_until &&
+                    $network->broadcast_boot_recovery_until->diffInMinutes(now()) < 10;
+
+                if ($recentBootRecovery) {
+                    $errorMessage .= ' — If the container just rebooted, Plex may still be releasing the previous transcode session. This is normal and should resolve in 2-3 minutes.';
+                } else {
+                    $errorMessage .= ' — Plex returned 400 Bad Request, likely due to an orphaned transcode session. Try stopping and restarting the broadcast.';
+                }
+            }
+
+            $network->update([
+                'broadcast_requested' => false,
+                'broadcast_error' => $errorMessage,
+            ]);
+
+            return;
+        }
+
+        // Transient failure — retry with exponential backoff.
+        // The proxy has already burned through its own 3 rapid retries before
+        // calling this callback, so we start with a longer base delay to give
+        // the media server time to recover (especially for 5XX errors).
         $network->refresh();
         $currentProgramme = $network->getCurrentProgramme();
 
         if ($currentProgramme && $network->broadcast_requested) {
-            Log::info('Attempting broadcast recovery via proxy', [
+
+            // Acquire restart lock to prevent tick loop from also restarting
+            $network->update(['broadcast_restart_locked' => true]);
+
+            // Use a higher base for server errors (5XX) since the server is struggling
+            $isServerError = str_contains($error, '5XX') || str_contains($error, 'Server Error');
+            $baseDelay = $isServerError ? 15 : 10;
+            $backoffSeconds = min($baseDelay * (int) pow(2, $failCount - 1), 120);
+
+            Log::info('Attempting broadcast recovery via proxy with backoff', [
                 'network_id' => $network->id,
                 'programme_id' => $currentProgramme->id,
+                'fail_count' => $failCount,
+                'backoff_seconds' => $backoffSeconds,
             ]);
 
-            // Small delay before retry to avoid rapid restart loops
-            sleep(2);
+            sleep($backoffSeconds);
 
-            $service->start($network);
+            try {
+                $service->start($network);
+            } finally {
+                // Always release the lock
+                $network->update(['broadcast_restart_locked' => false]);
+            }
         }
+    }
+
+    /**
+     * Stop a proxy stream initiated by the in-app player.
+     *
+     * Called via sendBeacon from the browser when a floating/popout player is closed
+     * or when the user navigates away. This is a best-effort signal; the proxy will
+     * also detect the TCP connection drop independently.
+     */
+    public function stopPlayerStream(Request $request): Response
+    {
+        $id = $request->input('id');
+        $type = $request->input('type');
+
+        if (! $id || ! $type) {
+            return response()->noContent(422);
+        }
+
+        $field = match ($type) {
+            'channel' => 'channel_id',
+            'episode' => 'episode_id',
+            default => null,
+        };
+
+        if (! $field) {
+            return response()->noContent(422);
+        }
+
+        try {
+            M3uProxyService::stopStreamsByMetadata($field, (string) $id);
+        } catch (Exception $e) {
+            Log::warning("Failed to stop player stream ({$type}:{$id}): ".$e->getMessage());
+        }
+
+        return response()->noContent();
     }
 }

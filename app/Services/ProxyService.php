@@ -34,12 +34,15 @@ class ProxyService
         }
 
         // Use the override URL or default to application URL
-        $url = $proxyUrlOverride && filter_var($proxyUrlOverride, FILTER_VALIDATE_URL)
-            ? $proxyUrlOverride
-            : url('');
+        if ($proxyUrlOverride && filter_var($proxyUrlOverride, FILTER_VALIDATE_URL)) {
+            $url = rtrim($proxyUrlOverride, '/');
+        } else {
+            // Use `url('')` to get request aware URL, which respects the current request's scheme and host, and is more reliable in various environments (e.g., behind proxies, load balancers)
+            $url = url('');
+        }
 
-        // Normalize the base url
-        $this->baseUrl = rtrim($url, '/');
+        // Set the base URL for the proxy service
+        $this->baseUrl = $url;
     }
 
     /**

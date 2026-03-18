@@ -46,9 +46,26 @@ function multiStreamManager() {
             // Mark that we've added the listener
             window._floatingStreamListenerAdded = true;
 
-            // Cleanup on page unload
+            // Cleanup on page unload (beforeunload + pagehide for mobile Safari)
             window.addEventListener('beforeunload', () => {
                 this.cleanupAllStreams();
+            });
+            window.addEventListener('pagehide', () => {
+                this.cleanupAllStreams();
+            });
+
+            // Cleanup on Livewire SPA navigation
+            window.addEventListener('livewire:navigating', () => {
+                this.cleanupAllStreams();
+            });
+
+            // Pause/resume streams on tab visibility change (saves bandwidth on mobile)
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') {
+                    this.pauseAllStreams();
+                } else if (document.visibilityState === 'visible') {
+                    this.resumeAllStreams();
+                }
             });
 
             // Global mouse events for drag and resize
@@ -71,10 +88,17 @@ function multiStreamManager() {
 
             const player = {
                 id: playerId,
+                channelId: channelData.id || null,
+                channelType: channelData.type || null,
                 title: channelData.title || channelData.name || 'Unknown Channel',
                 logo: channelData.logo || channelData.icon || '',
                 url: channelData.url || '',
                 format: channelData.format || 'ts',
+                content_type: channelData.content_type || '',
+                stream_id: channelData.stream_id || null,
+                playlist_id: channelData.playlist_id || null,
+                series_id: channelData.series_id || null,
+                season_number: channelData.season_number || null,
                 zIndex: ++this.zIndexCounter,
                 position: this.getRandomPosition(),
                 size: { width: 480, height: 270 }, // 16:9 aspect ratio
@@ -109,6 +133,9 @@ function multiStreamManager() {
             if (playerIndex !== -1) {
                 const player = this.players[playerIndex];
 
+                // Notify server to stop the proxy stream (best-effort via sendBeacon)
+                this.notifyServerStreamStop(player);
+
                 // Cleanup stream player via video element
                 const videoElement = document.getElementById(player.id + '-video');
                 if (videoElement && videoElement._streamPlayer) {
@@ -127,6 +154,8 @@ function multiStreamManager() {
 
         cleanupAllStreams() {
             this.players.forEach(player => {
+                // Notify server to stop the proxy stream (best-effort via sendBeacon)
+                this.notifyServerStreamStop(player);
                 // Cleanup via video element
                 const videoElement = document.getElementById(player.id + '-video');
                 if (videoElement && videoElement._streamPlayer) {
@@ -150,6 +179,51 @@ function multiStreamManager() {
 
             // Reset initialization flag
             this._initialized = false;
+        },
+
+        pauseAllStreams() {
+            this.players.forEach(player => {
+                const videoElement = document.getElementById(player.id + '-video');
+                if (videoElement && !videoElement.paused) {
+                    videoElement.pause();
+                    player._wasPausedByVisibility = true;
+                }
+            });
+        },
+
+        resumeAllStreams() {
+            this.players.forEach(player => {
+                if (player._wasPausedByVisibility) {
+                    const videoElement = document.getElementById(player.id + '-video');
+                    if (videoElement) {
+                        videoElement.play().catch(() => {
+                            // Autoplay may be blocked; user can manually resume
+                        });
+                    }
+                    player._wasPausedByVisibility = false;
+                }
+            });
+        },
+
+        /**
+         * Notify the server to stop the proxy stream for this player.
+         * Uses sendBeacon for reliability during page unload.
+         */
+        notifyServerStreamStop(player) {
+            if (!player.channelId || !player.channelType) {
+                return;
+            }
+            try {
+                const url = '/api/m3u-proxy/player-stream/stop';
+                const data = new Blob(
+                    [JSON.stringify({ id: player.channelId, type: player.channelType })],
+                    { type: 'application/json' }
+                );
+                navigator.sendBeacon(url, data);
+            } catch (e) {
+                // Best-effort: proxy will detect TCP drop as fallback
+                console.warn('Failed to notify server of stream stop:', e);
+            }
         },
 
         bringToFront(playerId) {
@@ -179,6 +253,11 @@ function multiStreamManager() {
                 logo: player.logo ?? '',
                 url: player.url ?? '',
                 format: player.format ?? 'ts',
+                content_type: player.content_type ?? '',
+                stream_id: player.stream_id ?? '',
+                playlist_id: player.playlist_id ?? '',
+                series_id: player.series_id ?? '',
+                season_number: player.season_number ?? '',
             });
 
             window.open(popoutRoute + '?' + params.toString(), '_blank', 'noopener');

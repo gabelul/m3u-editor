@@ -9,6 +9,7 @@ use App\Models\CustomPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\StreamProfile;
+use App\Rules\UrlIsAllowed;
 use App\Services\EpgCacheService;
 use App\Services\M3uProxyService;
 use App\Traits\HasUserFiltering;
@@ -16,6 +17,7 @@ use Carbon\Carbon;
 use Exception;
 use Filament\Actions;
 use Filament\Forms;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas;
 use Filament\Schemas\Components\Grid;
@@ -205,7 +207,7 @@ class PlaylistAliasResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            // ...
         ];
     }
 
@@ -340,6 +342,7 @@ class PlaylistAliasResource extends Resource
                                 ->prefixIcon('heroicon-m-globe-alt')
                                 ->maxLength(4000)
                                 ->url()
+                                ->rules([new UrlIsAllowed])
                                 ->columnSpan(2)
                                 ->required(),
                             Forms\Components\TextInput::make('username')
@@ -385,24 +388,46 @@ class PlaylistAliasResource extends Resource
                         ->type('number')
                         ->default(0) // Default to 0 streams (unlimited)
                         ->required(),
-                    Forms\Components\TextInput::make('available_streams')
-                        ->label('Available Streams')
-                        ->hint('Set to 0 for unlimited streams.')
-                        ->helperText('Number of streams available for this provider. If set to a value other than 0, will prevent any streams from starting if the number of active streams exceeds this value.')
-                        ->columnSpan(1)
-                        ->rules(['min:1'])
-                        ->type('number')
-                        ->default(0) // Default to 0 streams (for unlimted)
-                        ->required()
-                        ->hidden(fn (Get $get): bool => ! $get('enable_proxy')),
+                    Forms\Components\TextInput::make('server_timezone')
+                        ->label('Provider Timezone')
+                        ->helperText('The portal/provider timezone (DST-aware). Needed to correctly use timeshift functionality.')
+                        ->placeholder('Etc/UTC')
+                        ->hintAction(
+                            Actions\Action::make('get_provider_value')
+                                ->label('Get from playlist status')
+                                ->icon('heroicon-o-clock')
+                                ->action(action: function ($record, Set $set) {
+                                    $value = $record->getEffectivePlaylist()?->xtream_status['server_info']['timezone'] ?? null;
+                                    if ($value) {
+                                        $set('server_timezone', $value);
+                                        Notification::make()
+                                            ->title('Current Provider Timezone')
+                                            ->body("Provider timezone retrieved from playlist status: {$value}. Press save changes to apply this value, or you can manually enter a different timezone if needed.")
+                                            ->success()
+                                            ->send();
+
+                                        return;
+                                    }
+                                    Notification::make()
+                                        ->title('Provider Timezone Not Found')
+                                        ->body('Provider timezone not found in playlist status. Make sure the playlist is connected and has synced at least once to retrieve this information.')
+                                        ->danger()
+                                        ->send();
+                                })->hidden(fn ($record) => $record?->playlist_id === null)
+                        ),
 
                     Grid::make()
                         ->columns(1)
                         ->schema([
-                            Forms\Components\TextInput::make('server_timezone')
-                                ->label('Provider Timezone')
-                                ->helperText('The portal/provider timezone (DST-aware). Needed to correctly use timeshift functionality when playlist proxy is enabled.')
-                                ->placeholder('Etc/UTC'),
+                            Forms\Components\TextInput::make('available_streams')
+                                ->label('Available Streams')
+                                ->hint('Set to 0 for unlimited streams.')
+                                ->helperText('Number of streams available for this provider. If set to a value other than 0, will prevent any streams from starting if the number of active streams exceeds this value.')
+                                ->columnSpan(1)
+                                ->rules(['min:1'])
+                                ->type('number')
+                                ->default(0) // Default to 0 streams (for unlimted)
+                                ->required(),
                             Forms\Components\Toggle::make('strict_live_ts')
                                 ->label('Enable Strict Live TS Handling')
                                 ->hintAction(

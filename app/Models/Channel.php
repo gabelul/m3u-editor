@@ -165,6 +165,9 @@ class Channel extends Model
 
         return [
             'id' => $this->id,
+            'stream_id' => $this->id,
+            'content_type' => $this->is_vod ? 'vod' : 'live',
+            'playlist_id' => $this->playlist_id,
             'title' => $this->name_custom ?? $this->name,
             'url' => $url,
             'format' => $profile->format ?? $format,
@@ -291,7 +294,7 @@ class Channel extends Model
             if (! $this->is_vod) {
                 return false;
             }
-            $movieData = $xtream->getVodInfo($this->source_id);
+            $movieData = $xtream->getVodInfo($this->source_id, timeout: 60);
             $releaseDate = $movieData['info']['release_date'] ?? null;
             $releaseDateAlt = $movieData['info']['releasedate'] ?? null;
             $year = $this->year;
