@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+########################################
+# Custom M3U Editor image
+# Extends upstream sparkison/m3u-editor with Gabi's enhancements:
+#   - ML Matcher microservice (TF-IDF n-gram + RapidFuzz EPG matching)
+#   - Channel title normalization service
+#   - Country-aware EPG matching ranking
+#   - SimilaritySearchService with ML matcher integration
+#
+# Build:  docker build -f Dockerfile.custom -t gabelul/m3u-editor:latest .
+# Push:   docker push gabelul/m3u-editor:latest (optional, for multi-server)
+########################################
+FROM sparkison/m3u-editor:latest
+
+LABEL org.opencontainers.image.title="m3u-editor-enhanced" \
+      org.opencontainers.image.description="M3U Editor + ML EPG matching, title normalization, country-aware ranking" \
+      org.opencontainers.image.vendor="gabelul"
+
+# ---------- ML Matcher service ----------
+# Python microservice: Flask + RapidFuzz + scikit-learn TF-IDF
+# Deps are installed at runtime by start.sh into the persistent volume
+# (/var/www/config/ml-matcher-deps) to avoid bloating the image with ~200MB of pip packages.
+COPY --chown=m3ue:m3ue ml-matcher/ /opt/ml-matcher/
+RUN chmod +x /opt/ml-matcher/start.sh /opt/ml-matcher/install.sh
+
+# ---------- PHP enhancements ----------
+# Title normalization service — strips geo prefixes, cleans channel names
+COPY --chown=m3ue:m3ue app/Services/ChannelTitleNormalizerService.php /var/www/html/app/Services/ChannelTitleNormalizerService.php
+
+# SimilaritySearchService — patched to call ML matcher with country_hint support
+COPY --chown=m3ue:m3ue app/Services/SimilaritySearchService.php /var/www/html/app/Services/SimilaritySearchService.php
+
+# Import chunk — hooks title normalization into the M3U import pipeline
+COPY --chown=m3ue:m3ue app/Jobs/ProcessM3uImportChunk.php /var/www/html/app/Jobs/ProcessM3uImportChunk.php
+
+# Artisan command for manual/batch title normalization
+COPY --chown=m3ue:m3ue app/Console/Commands/NormalizeChannelTitles.php /var/www/html/app/Console/Commands/NormalizeChannelTitles.php
+
+# ---------- Database migration ----------
+# Adds title_normalized column to channels table
+COPY --chown=m3ue:m3ue database/migrations/2026_03_07_030000_add_title_normalized_to_channels.php /var/www/html/database/migrations/2026_03_07_030000_add_title_normalized_to_channels.php
+
+# ---------- Supervisor config ----------
+# Appends ml-matcher program block to the existing supervisord.conf
+# Uses a heredoc so we don't have to maintain a full copy of the upstream config
+RUN cat >> /etc/supervisor/conf.d/supervisord.conf << 'SUPERVISOR_EOF'
+
+;-----------------------------------------
+; ML Matcher Service (TF-IDF n-gram semantic EPG matching)
+; Provides /match and /match-batch endpoints on port 5599 (localhost only)
+;-----------------------------------------
+[program:ml-matcher]
+command=/bin/sh /opt/ml-matcher/start.sh
+user=%(ENV_SUPERVISOR_PHP_USER)s
+autostart=true
+autorestart=true
+startsecs=10
+startretries=3
+redirect_stderr=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+priority=8
+environment=ML_MATCHER_HOST="127.0.0.1",ML_MATCHER_PORT="5599",ML_MATCHER_LOG_LEVEL="INFO"
+SUPERVISOR_EOF
