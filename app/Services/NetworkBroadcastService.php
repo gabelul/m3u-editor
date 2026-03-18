@@ -1113,7 +1113,7 @@ class NetworkBroadcastService
             $result['programme'] = $programme->title;
 
             // Direct console output for recovery success
-            if ($success) {
+            if ($success && ! app()->runningUnitTests()) {
                 echo "🔄 [TICK RECOVERY] {$network->name} broadcast restarted successfully\n";
             }
 
@@ -1254,7 +1254,9 @@ class NetworkBroadcastService
             Log::info('🚀 CONTAINER BOOT RECOVERY COMPLETE: Broadcasting systems are ready');
 
             // Direct console output to ensure it shows up in container logs
-            echo "🚀 [BOOT RECOVERY] Container recovery complete - {$recovered} network(s) ready for broadcasting\n";
+            if (! app()->runningUnitTests()) {
+                echo "🚀 [BOOT RECOVERY] Container recovery complete - {$recovered} network(s) ready for broadcasting\n";
+            }
         }
 
         return $recovered;

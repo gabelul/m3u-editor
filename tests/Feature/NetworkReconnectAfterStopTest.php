@@ -3,6 +3,7 @@
 use App\Models\Network;
 use App\Models\User;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
 beforeEach(function () {
@@ -213,6 +214,38 @@ it('waits briefly for first on-demand playlist after start', function () {
     $playlistResp->assertStatus(200);
     expect(str_contains($playlistResp->getContent(), '#EXTM3U'))->toBeTrue();
 
+    Carbon::setTestNow();
+})->group('serial');
+
+it('playlist cold-start is skipped when lock is already held by a concurrent request', function () {
+    Carbon::setTestNow(now());
+
+    Http::fake([
+        '*/broadcast/*/live.m3u8' => Http::response("#EXTM3U\n#EXT-X-TARGETDURATION:6\n", 200),
+    ]);
+
+    $network = Network::factory()->for($this->user)->create([
+        'broadcast_enabled' => true,
+        'broadcast_requested' => true,
+        'broadcast_on_demand' => true,
+        'enabled' => true,
+        'broadcast_started_at' => null,
+        'broadcast_pid' => null,
+    ]);
+
+    // Simulate a concurrent request holding the startup lock
+    $lock = Cache::lock("network.on_demand.start.{$network->id}", 10);
+    $lock->get();
+
+    $service = Mockery::mock(\App\Services\NetworkBroadcastService::class);
+    $service->shouldNotReceive('startNow');
+    $service->shouldNotReceive('markConnectionSeen');
+    app()->instance(\App\Services\NetworkBroadcastService::class, $service);
+
+    $playlistResp = $this->get(route('network.hls.playlist', ['network' => $network->uuid]));
+    $playlistResp->assertStatus(200);
+
+    $lock->release();
     Carbon::setTestNow();
 })->group('serial');
 

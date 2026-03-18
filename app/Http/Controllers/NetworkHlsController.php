@@ -6,6 +6,7 @@ use App\Models\Network;
 use App\Services\M3uProxyService;
 use App\Services\NetworkBroadcastService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
@@ -41,9 +42,21 @@ class NetworkHlsController extends Controller
 
         if ($network->enabled && $network->broadcast_requested && $network->broadcast_on_demand) {
             if (! $network->isBroadcasting()) {
-                $this->broadcastService->markConnectionSeen($network);
-                $this->broadcastService->startNow($network);
-                $network->refresh();
+                $lock = Cache::lock("network.on_demand.start.{$network->id}", 10);
+
+                if ($lock->get()) {
+                    try {
+                        $network->refresh();
+
+                        if (! $network->isBroadcasting()) {
+                            $this->broadcastService->markConnectionSeen($network);
+                            $this->broadcastService->startNow($network);
+                            $network->refresh();
+                        }
+                    } finally {
+                        $lock->release();
+                    }
+                }
             }
         }
 
