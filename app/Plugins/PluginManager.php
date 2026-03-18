@@ -260,6 +260,14 @@ class PluginManager
 
     private function finishRun(ExtensionPluginRun $run, PluginActionResult $result): ExtensionPluginRun
     {
+        $run->logs()->create([
+            'level' => $result->success ? 'info' : 'error',
+            'message' => $result->summary,
+            'context' => [
+                'result' => $result->data,
+            ],
+        ]);
+
         $run->update([
             'status' => $result->success ? 'completed' : 'failed',
             'result' => $result->toArray(),
@@ -272,6 +280,12 @@ class PluginManager
 
     private function failRun(ExtensionPluginRun $run, string $message): ExtensionPluginRun
     {
+        $run->logs()->create([
+            'level' => 'error',
+            'message' => $message,
+            'context' => [],
+        ]);
+
         $run->update([
             'status' => 'failed',
             'summary' => $message,

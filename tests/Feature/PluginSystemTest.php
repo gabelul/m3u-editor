@@ -5,9 +5,11 @@ use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\ExtensionPlugin;
+use App\Models\ExtensionPluginRunLog;
 use App\Models\Playlist;
 use App\Models\User;
 use App\Plugins\PluginManager;
+use App\Plugins\PluginSchemaMapper;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
@@ -110,6 +112,9 @@ it('scans and applies epg repairs through the plugin manager', function () {
     expect(data_get($scanRun->result, 'data.channels.0.issue'))->toBe('unmapped');
     expect(data_get($scanRun->result, 'data.channels.0.suggested_epg_channel_id'))->toBe($epgChannel->id);
     expect(data_get($scanRun->result, 'data.channels.0.repairable'))->toBeTrue();
+    expect(data_get($scanRun->result, 'data.totals.epg_channels_available'))->toBe(1);
+    expect($scanRun->logs()->count())->toBeGreaterThanOrEqual(2);
+    expect($scanRun->logs()->pluck('message')->join(' '))->toContain('Starting EPG Repair scan.');
 
     $applyRun = $pluginManager->executeAction($plugin->fresh(), 'apply', [
         'playlist_id' => $playlist->id,
@@ -128,4 +133,75 @@ it('scans and applies epg repairs through the plugin manager', function () {
 
     expect($channel->epg_channel_id)->toBe($epgChannel->id);
     expect(data_get($applyRun->result, 'data.totals.repairs_applied'))->toBe(1);
+    expect($applyRun->logs()->pluck('message')->join(' '))->toContain('Applied EPG repair to channel.');
+    expect(ExtensionPluginRunLog::query()->count())->toBeGreaterThanOrEqual(4);
+});
+
+it('explains when a scan has no enabled live channels to inspect', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::create([
+        'name' => 'Empty Playlist Tester',
+        'email' => 'empty-playlist-'.Str::random(10).'@example.com',
+        'password' => Hash::make('password'),
+        'email_verified_at' => now(),
+    ]);
+
+    $playlist = Playlist::create([
+        'name' => 'Empty Playlist',
+        'uuid' => (string) Str::uuid(),
+        'url' => 'http://example.test/empty.m3u',
+        'status' => Status::Completed,
+        'prefix' => 'empty',
+        'channels' => 0,
+        'synced' => now(),
+        'id_channel_by' => 'stream_id',
+        'user_id' => $user->id,
+    ]);
+
+    $epg = Epg::create([
+        'name' => 'Empty Playlist EPG',
+        'url' => 'http://example.test/epg.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    $scanRun = $pluginManager->executeAction($plugin->fresh(), 'scan', [
+        'playlist_id' => $playlist->id,
+        'epg_id' => $epg->id,
+        'hours_ahead' => 12,
+        'confidence_threshold' => 0.6,
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'user_id' => $user->id,
+    ]);
+
+    expect($scanRun->status)->toBe('completed');
+    expect($scanRun->summary)->toContain('no enabled live channels');
+    expect(data_get($scanRun->result, 'data.totals.channels_scanned'))->toBe(0);
+    expect($scanRun->logs()->pluck('message')->join(' '))->toContain('no enabled live channels');
+});
+
+it('prefills plugin action fields from saved settings when declared', function () {
+    $plugin = app(PluginManager::class)->discover()[0];
+
+    $plugin->forceFill([
+        'settings' => [
+            'default_playlist_id' => 42,
+            'default_epg_id' => 77,
+            'hours_ahead' => 24,
+            'confidence_threshold' => 0.8,
+        ],
+    ]);
+
+    $components = collect(app(PluginSchemaMapper::class)->actionComponents($plugin, 'scan'))
+        ->keyBy(fn ($component) => $component->getName());
+
+    expect($components['playlist_id']->getDefaultState())->toBe(42);
+    expect($components['epg_id']->getDefaultState())->toBe(77);
+    expect($components['hours_ahead']->getDefaultState())->toBe(24);
+    expect($components['confidence_threshold']->getDefaultState())->toBe(0.8);
 });

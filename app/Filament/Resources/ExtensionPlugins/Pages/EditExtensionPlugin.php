@@ -99,7 +99,7 @@ class EditExtensionPlugin extends EditRecord
                     Notification::make()
                         ->success()
                         ->title(($pluginAction['label'] ?? ucfirst($actionId)).' queued')
-                        ->body('The plugin action is running in the background. Check the run log below for the result.')
+                        ->body('The plugin action is running in the background. Watch the Live Activity and Run History tabs for progress and results.')
                         ->send();
                 });
         }

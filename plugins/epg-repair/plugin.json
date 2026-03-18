@@ -38,7 +38,8 @@
       "type": "model_select",
       "model": "App\\Models\\Playlist",
       "label_attribute": "name",
-      "scope": "owned"
+      "scope": "owned",
+      "helper_text": "Used for auto scans and pre-filled in manual actions. Pick a playlist that has enabled live channels."
     },
     {
       "id": "default_epg_id",
@@ -46,7 +47,8 @@
       "type": "model_select",
       "model": "App\\Models\\Epg",
       "label_attribute": "name",
-      "scope": "owned"
+      "scope": "owned",
+      "helper_text": "Used for auto scans and pre-filled in manual actions. Pick a synced EPG with channel data."
     },
     {
       "id": "hours_ahead",
@@ -74,7 +76,9 @@
           "model": "App\\Models\\Playlist",
           "label_attribute": "name",
           "scope": "owned",
-          "required": true
+          "required": true,
+          "default_from_setting": "default_playlist_id",
+          "helper_text": "Choose a playlist with enabled live channels. If a scan reports 0 channels, this is the first thing to check."
         },
         {
           "id": "epg_id",
@@ -83,7 +87,9 @@
           "model": "App\\Models\\Epg",
           "label_attribute": "name",
           "scope": "owned",
-          "required": true
+          "required": true,
+          "default_from_setting": "default_epg_id",
+          "helper_text": "Choose the EPG you want to repair against."
         },
         {
           "id": "hours_ahead",
@@ -112,7 +118,9 @@
           "model": "App\\Models\\Playlist",
           "label_attribute": "name",
           "scope": "owned",
-          "required": true
+          "required": true,
+          "default_from_setting": "default_playlist_id",
+          "helper_text": "Choose the same playlist you scanned, ideally one with enabled live channels."
         },
         {
           "id": "epg_id",
@@ -121,7 +129,9 @@
           "model": "App\\Models\\Epg",
           "label_attribute": "name",
           "scope": "owned",
-          "required": true
+          "required": true,
+          "default_from_setting": "default_epg_id",
+          "helper_text": "Choose the same EPG used during the scan so the repair suggestions line up."
         },
         {
           "id": "hours_ahead",
