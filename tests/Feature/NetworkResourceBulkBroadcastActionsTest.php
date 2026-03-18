@@ -29,7 +29,7 @@ it('starts broadcast for selected networks via bulk action', function () {
             'broadcast_requested' => false,
         ]);
 
-    $service = \Mockery::mock(NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldReceive('startNow')
         ->times(2)
         ->andReturn(true);
@@ -52,7 +52,7 @@ it('stops broadcast for selected networks via bulk action', function () {
             'broadcast_enabled' => true,
         ]);
 
-    $service = \Mockery::mock(NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldReceive('stop')
         ->times(2)
         ->andReturn(true);

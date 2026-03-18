@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Jobs\RegenerateNetworkSchedule;
+use App\Services\NetworkBroadcastService;
+use App\Services\NetworkEpgService;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -80,7 +82,7 @@ class NetworkContent extends Model
                 // Stop any active broadcast
                 if ($network->broadcast_enabled && $network->broadcast_pid) {
                     try {
-                        app(\App\Services\NetworkBroadcastService::class)->stop($network);
+                        app(NetworkBroadcastService::class)->stop($network);
                     } catch (\Throwable $e) {
                         Log::warning('Failed to stop broadcast after content removal', [
                             'network_id' => $network->id,
@@ -95,7 +97,7 @@ class NetworkContent extends Model
 
                 // Regenerate EPG (will be empty but keep structure valid)
                 try {
-                    app(\App\Services\NetworkEpgService::class)->generateEpg($network);
+                    app(NetworkEpgService::class)->generateEpg($network);
                 } catch (\Throwable $e) {
                     Log::warning('Failed to regenerate EPG after content removal', [
                         'network_id' => $network->id,

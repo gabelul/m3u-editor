@@ -114,7 +114,7 @@ it('playlist touch starts on-demand requested broadcast', function () {
         'broadcast_pid' => null,
     ]);
 
-    $service = Mockery::mock(\App\Services\NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldReceive('markConnectionSeen')->once()->andReturnUsing(function (Network $n): void {
         $n->update(['broadcast_last_connection_at' => now()]);
     });
@@ -127,7 +127,7 @@ it('playlist touch starts on-demand requested broadcast', function () {
         return true;
     });
 
-    app()->instance(\App\Services\NetworkBroadcastService::class, $service);
+    app()->instance(NetworkBroadcastService::class, $service);
 
     $playlistResp = $this->get(route('network.hls.playlist', ['network' => $network->uuid]));
     $playlistResp->assertStatus(200);
@@ -157,10 +157,10 @@ it('playlist fetch does not refresh on-demand connection heartbeat while already
         'broadcast_last_connection_at' => $initialHeartbeat,
     ]);
 
-    $service = Mockery::mock(\App\Services\NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldNotReceive('markConnectionSeen');
     $service->shouldNotReceive('startRequested');
-    app()->instance(\App\Services\NetworkBroadcastService::class, $service);
+    app()->instance(NetworkBroadcastService::class, $service);
 
     $playlistResp = $this->get(route('network.hls.playlist', ['network' => $network->uuid]));
     $playlistResp->assertStatus(200);
@@ -196,7 +196,7 @@ it('waits briefly for first on-demand playlist after start', function () {
         'broadcast_pid' => null,
     ]);
 
-    $service = Mockery::mock(\App\Services\NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldReceive('markConnectionSeen')->once()->andReturnUsing(function (Network $n): void {
         $n->update([
             'broadcast_last_connection_at' => now(),
@@ -211,7 +211,7 @@ it('waits briefly for first on-demand playlist after start', function () {
         return true;
     });
 
-    app()->instance(\App\Services\NetworkBroadcastService::class, $service);
+    app()->instance(NetworkBroadcastService::class, $service);
 
     $playlistResp = $this->get(route('network.hls.playlist', ['network' => $network->uuid]));
     $playlistResp->assertStatus(200);
@@ -241,10 +241,10 @@ it('playlist cold-start is skipped when lock is already held by a concurrent req
     $lock = Cache::lock("network.on_demand.start.{$network->id}", 10);
     $lock->get();
 
-    $service = Mockery::mock(\App\Services\NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldNotReceive('startNow');
     $service->shouldNotReceive('markConnectionSeen');
-    app()->instance(\App\Services\NetworkBroadcastService::class, $service);
+    app()->instance(NetworkBroadcastService::class, $service);
 
     $playlistResp = $this->get(route('network.hls.playlist', ['network' => $network->uuid]));
     $playlistResp->assertStatus(200);
@@ -277,9 +277,9 @@ it('waits for runway even when startup playlist initially returns 200 with too f
         'broadcast_pid' => 9876,
     ]);
 
-    $service = Mockery::mock(\App\Services\NetworkBroadcastService::class);
+    $service = Mockery::mock(NetworkBroadcastService::class);
     $service->shouldNotReceive('startNow');
-    app()->instance(\App\Services\NetworkBroadcastService::class, $service);
+    app()->instance(NetworkBroadcastService::class, $service);
 
     $playlistResp = $this->get(route('network.hls.playlist', ['network' => $network->uuid]));
     $playlistResp->assertStatus(200);

@@ -5,6 +5,7 @@ use App\Models\Network;
 use App\Models\NetworkProgramme;
 use App\Services\EmbyJellyfinService;
 use App\Services\NetworkBroadcastService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -288,7 +289,7 @@ it('preserves static direct stream for emby even with internal options', functio
     ]);
 
     $service = EmbyJellyfinService::make($integration);
-    $request = new \Illuminate\Http\Request;
+    $request = new Request;
     $request->merge([
         'StartTimeTicks' => 300000000,
     ]);
