@@ -17,6 +17,11 @@ class EditExtensionPlugin extends EditRecord
 {
     protected static string $resource = ExtensionPluginResource::class;
 
+    public function getSubheading(): ?string
+    {
+        return 'Monitor this plugin, queue one-off jobs, and tune the defaults that automation will reuse.';
+    }
+
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         /** @var ExtensionPlugin $record */

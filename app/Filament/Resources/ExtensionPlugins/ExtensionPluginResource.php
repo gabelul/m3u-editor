@@ -5,9 +5,12 @@ namespace App\Filament\Resources\ExtensionPlugins;
 use App\Filament\Resources\ExtensionPlugins\Pages\EditExtensionPlugin;
 use App\Filament\Resources\ExtensionPlugins\Pages\ListExtensionPlugins;
 use App\Filament\Resources\ExtensionPlugins\Pages\ViewPluginRun;
+use App\Models\Epg;
 use App\Filament\Resources\ExtensionPlugins\RelationManagers\LogsRelationManager;
 use App\Filament\Resources\ExtensionPlugins\RelationManagers\RunsRelationManager;
 use App\Models\ExtensionPlugin;
+use App\Models\ExtensionPluginRun;
+use App\Models\Playlist;
 use App\Plugins\PluginSchemaMapper;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\TextInput;
@@ -62,46 +65,72 @@ class ExtensionPluginResource extends Resource
                     Tab::make('Overview')
                         ->icon('heroicon-m-puzzle-piece')
                         ->schema([
-                            Section::make('Status')
+                            Section::make('Control Center')
+                                ->compact()
+                                ->schema([
+                                    Placeholder::make('hero_panel')
+                                        ->hiddenLabel()
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::heroPanel($record))),
+                                ]),
+                            Section::make('Operational Snapshot')
                                 ->compact()
                                 ->columns(3)
                                 ->schema([
-                                    Placeholder::make('plugin_status_snapshot')
-                                        ->label('Plugin Status')
-                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pluginStatusSnapshot($record))),
-                                    Placeholder::make('latest_run_snapshot')
-                                        ->label('Latest Run')
-                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::latestRunSnapshot($record))),
+                                    Placeholder::make('run_posture')
+                                        ->hiddenLabel()
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::runPostureCard($record))),
                                     Placeholder::make('automation_snapshot')
-                                        ->label('Automation')
-                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::automationSnapshot($record))),
+                                        ->hiddenLabel()
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::automationCard($record))),
+                                    Placeholder::make('next_step_snapshot')
+                                        ->hiddenLabel()
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::nextStepCard($record))),
                                 ]),
-                            Section::make('Overview')
+                            Section::make('Capability Map')
                                 ->compact()
                                 ->schema([
-                                    Placeholder::make('plugin_identity')
-                                        ->label('Plugin')
-                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pluginIdentity($record))),
                                     Grid::make(2)
                                         ->schema([
                                             Placeholder::make('capabilities_display')
-                                                ->label('Capabilities')
-                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pillList(
-                                                    collect($record?->capabilities ?? [])
-                                                        ->map(fn (string $capability) => str($capability)->replace('_', ' ')->headline())
-                                                        ->all(),
-                                                    'This plugin has not declared any capabilities yet.',
+                                                ->hiddenLabel()
+                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::infoCard(
+                                                    'Capabilities',
+                                                    'What this plugin can participate in inside the platform.',
+                                                    self::pillList(
+                                                        collect($record?->capabilities ?? [])
+                                                            ->map(fn (string $capability) => str($capability)->replace('_', ' ')->headline())
+                                                            ->all(),
+                                                        'This plugin has not declared any capabilities yet.',
+                                                    ),
                                                 ))),
                                             Placeholder::make('actions_display')
-                                                ->label('Operator Actions')
-                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::operatorActions($record))),
+                                                ->hiddenLabel()
+                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::infoCard(
+                                                    'Operator Actions',
+                                                    'Manual actions available from the page header.',
+                                                    self::operatorActions($record),
+                                                ))),
                                         ]),
-                                    Placeholder::make('hooks_display')
-                                        ->label('Hook Subscriptions')
-                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pillList(
-                                            collect($record?->hooks ?? [])->all(),
-                                            'This plugin only runs when you trigger one of its header actions.',
-                                        ))),
+                                    Grid::make(2)
+                                        ->schema([
+                                            Placeholder::make('hooks_display')
+                                                ->hiddenLabel()
+                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::infoCard(
+                                                    'Hook Subscriptions',
+                                                    'Background entry points the framework can trigger automatically.',
+                                                    self::pillList(
+                                                        collect($record?->hooks ?? [])->all(),
+                                                        'This plugin only runs when you trigger one of its header actions.',
+                                                    ),
+                                                ))),
+                                            Placeholder::make('plugin_identity')
+                                                ->hiddenLabel()
+                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::infoCard(
+                                                    'Plugin Contract',
+                                                    'Version, implementation source, and what operators should expect.',
+                                                    self::pluginIdentity($record),
+                                                ))),
+                                        ]),
                                 ]),
                             Section::make('Advanced Diagnostics')
                                 ->compact()
@@ -212,9 +241,61 @@ class ExtensionPluginResource extends Resource
         ]);
     }
 
+    protected static function heroPanel(?ExtensionPlugin $record): string
+    {
+        if (! $record) {
+            return self::mutedMessage('No plugin record loaded.');
+        }
+
+        $focusRun = self::focusRun($record);
+        $statusBadge = self::statusBadge($record);
+        $runBadge = $focusRun ? self::runStatusBadge($focusRun) : self::mutedBadge('No runs yet');
+        $summary = $focusRun?->summary ?: 'Use the header actions to run this plugin once, then track the job from Live Activity and Run History.';
+        $runLink = $focusRun
+            ? '<a href="'.e(self::getUrl('run', ['record' => $record, 'run' => $focusRun])).'" class="inline-flex items-center rounded-full border border-primary-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-primary-700 shadow-sm hover:bg-primary-50 dark:border-primary-800 dark:bg-gray-900/80 dark:text-primary-300 dark:hover:bg-primary-950/60">Open focus run</a>'
+            : null;
+
+        return '
+            <div class="overflow-hidden rounded-[1.75rem] border border-gray-200/80 bg-gradient-to-br from-white via-primary-50/30 to-white shadow-sm dark:border-gray-800 dark:from-gray-950 dark:via-primary-950/20 dark:to-gray-950">
+                <div class="grid gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.85fr)] lg:px-8">
+                    <div class="space-y-4">
+                        <div class="flex flex-wrap items-center gap-2">
+                            '.$statusBadge.'
+                            '.$runBadge.'
+                            '.self::mutedBadge('API '.e($record->api_version ?? 'unknown')).'
+                        </div>
+                        <div class="space-y-2">
+                            <div class="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary-600 dark:text-primary-300">Plugin control center</div>
+                            <div class="text-2xl font-semibold tracking-tight text-gray-950 dark:text-white">'.e($record->name).'</div>
+                            <div class="max-w-3xl text-sm leading-6 text-gray-600 dark:text-gray-300">'.e($record->description ?: 'No description provided.').'</div>
+                        </div>
+                        <div class="grid gap-3 sm:grid-cols-3">
+                            '.self::statPill('Implementation', e($record->class_name ? class_basename($record->class_name) : 'Unknown class'), 'The plugin class discovered from the manifest.').'
+                            '.self::statPill('Availability', $record->available ? 'Available on disk' : 'Missing from disk', 'Whether the plugin files are currently present.').'
+                            '.self::statPill('Defaults', e(self::targetSummary($record)), 'Saved targets used for manual defaults and automation.').'
+                        </div>
+                    </div>
+                    <div class="rounded-[1.5rem] border border-white/60 bg-white/80 p-5 shadow-sm backdrop-blur dark:border-gray-800 dark:bg-gray-900/85">
+                        <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Operator posture</div>
+                        <div class="mt-3 text-sm leading-6 text-gray-700 dark:text-gray-200">'.e($summary).'</div>
+                        <div class="mt-5 space-y-3">
+                            '.self::stackedStat('Last validation', $record->last_validated_at?->toDateTimeString() ?? 'Not validated yet').'
+                            '.self::stackedStat('Focus run', $focusRun?->created_at?->toDateTimeString() ?? 'No runs queued yet').'
+                            '.self::stackedStat('Source', e(Str::headline($record->source_type ?? 'local'))).'
+                        </div>
+                        <div class="mt-5 flex flex-wrap gap-2">
+                            '.$runLink.'
+                            <span class="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">Header actions queue work</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        ';
+    }
+
     protected static function latestRunSnapshot(?ExtensionPlugin $record): string
     {
-        $latestRun = $record?->runs()->first();
+        $latestRun = self::latestRun($record);
 
         if (! $latestRun) {
             return self::mutedMessage('No plugin runs recorded yet. Use the header actions to run the plugin once.');
@@ -229,19 +310,109 @@ class ExtensionPluginResource extends Resource
         ]);
     }
 
-    protected static function automationSnapshot(?ExtensionPlugin $record): string
+    protected static function runPostureCard(?ExtensionPlugin $record): string
     {
+        $latestRun = self::focusRun($record);
+
+        if (! $latestRun) {
+            return self::infoCard(
+                'Current Run',
+                'The most recent plugin job and where to inspect it.',
+                self::mutedMessage('No runs recorded yet. Trigger a scan or apply action from the header to create the first job.'),
+            );
+        }
+
+        $totals = collect(data_get($latestRun->result, 'data.totals', []))
+            ->filter(fn ($value) => is_scalar($value))
+            ->map(fn ($value, $key) => '<div class="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-950"><div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">'.e(Str::headline((string) $key)).'</div><div class="mt-1 text-sm font-semibold text-gray-950 dark:text-white">'.e((string) $value).'</div></div>')
+            ->take(4)
+            ->implode('');
+
+        $body = '
+            <div class="space-y-4">
+                <div class="flex flex-wrap items-center gap-2">
+                    '.self::runStatusBadge($latestRun).'
+                    '.($latestRun->dry_run ? self::mutedBadge('Dry run') : '').'
+                </div>
+                <div class="space-y-1">
+                    <div class="text-sm font-semibold text-gray-950 dark:text-white">'.e(Str::headline($latestRun->action ?: $latestRun->hook ?: 'Run')).'</div>
+                    <div class="text-sm text-gray-600 dark:text-gray-300">'.e($latestRun->summary ?: 'No summary has been written yet.').'</div>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    '.self::stackedStat('Queued', $latestRun->created_at?->toDateTimeString() ?? 'Unknown time').'
+                    '.self::stackedStat('Invocation', e(Str::headline($latestRun->invocation_type))).'
+                </div>
+                '.($totals !== '' ? '<div class="grid gap-2 sm:grid-cols-2">'.$totals.'</div>' : '').'
+                <div>
+                    <a href="'.e(self::getUrl('run', ['record' => $record, 'run' => $latestRun])).'" class="inline-flex items-center rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs font-semibold text-primary-700 hover:bg-primary-100 dark:border-primary-800 dark:bg-primary-950/40 dark:text-primary-300 dark:hover:bg-primary-900/60">Inspect this run</a>
+                </div>
+            </div>
+        ';
+
+        return self::infoCard('Current Run', 'The latest execution and its immediate outcome.', $body);
+    }
+
+    protected static function automationCard(?ExtensionPlugin $record): string
+    {
+        if (! $record) {
+            return self::infoCard('Automation', 'Defaults and schedules used by the plugin.', self::mutedMessage('No plugin record loaded.'));
+        }
+
         $autoScan = $record?->getSetting('auto_scan_on_epg_ready') ? 'Auto scan on EPG cache: enabled' : 'Auto scan on EPG cache: disabled';
         $scheduled = $record?->getSetting('schedule_enabled')
             ? 'Scheduled scans: '.(string) $record->getSetting('schedule_cron', 'enabled')
             : 'Scheduled scans: disabled';
 
-        return self::stackedLines([
-            '<span class="font-medium">'.e($autoScan).'</span>',
-            '<span class="font-medium">'.e($scheduled).'</span>',
-            $record?->getSetting('default_playlist_id') ? 'Default playlist ID: '.e((string) $record->getSetting('default_playlist_id')) : null,
-            $record?->getSetting('default_epg_id') ? 'Default EPG ID: '.e((string) $record->getSetting('default_epg_id')) : null,
-        ]);
+        $body = '
+            <div class="space-y-4">
+                <div class="grid gap-3 sm:grid-cols-2">
+                    '.self::stackedStat('Auto trigger', e($autoScan)).'
+                    '.self::stackedStat('Schedule', e($scheduled)).'
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    '.self::stackedStat('Default playlist', e(self::playlistLabel($record->getSetting('default_playlist_id')))).'
+                    '.self::stackedStat('Default EPG', e(self::epgLabel($record->getSetting('default_epg_id')))).'
+                </div>
+                <div class="text-xs leading-5 text-gray-500 dark:text-gray-400">These values prefill manual actions and are reused when hooks or schedules queue work automatically.</div>
+            </div>
+        ';
+
+        return self::infoCard('Automation', 'Defaults, schedules, and automatic entry points.', $body);
+    }
+
+    protected static function nextStepCard(?ExtensionPlugin $record): string
+    {
+        if (! $record) {
+            return self::infoCard('Recommended Next Step', 'What the operator should do next.', self::mutedMessage('No plugin record loaded.'));
+        }
+
+        $latestRun = self::latestRun($record);
+
+        if ($record->validation_status !== 'valid') {
+            $message = 'Validate the plugin before you enable it or queue any work. The system should treat this plugin as untrusted until the contract checks pass.';
+        } elseif (! $record->enabled) {
+            $message = 'The plugin is valid but disabled. Enable it first, then run a dry scan so you can inspect the output before applying repairs.';
+        } elseif (! $latestRun) {
+            $message = 'Queue a scan from the header to generate the first run. That will populate Live Activity, Run History, and the run detail screen.';
+        } elseif ($latestRun->status === 'running') {
+            $message = 'Open the current run and watch the activity stream. If the run stalls, inspect the payload to confirm the target playlist and EPG pair.';
+        } elseif ($latestRun->status === 'failed') {
+            $message = 'Review the failed run, check the activity stream for the error context, and correct the target playlist, EPG, or thresholds before trying again.';
+        } else {
+            $message = 'Use the last completed run as your baseline. If the candidate count looks right, queue an apply run or tighten the thresholds from the Settings tab.';
+        }
+
+        $body = '
+            <div class="space-y-4">
+                <div class="rounded-2xl border border-primary-200 bg-primary-50/70 px-4 py-4 text-sm leading-6 text-primary-900 dark:border-primary-800 dark:bg-primary-950/30 dark:text-primary-100">'.e($message).'</div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    '.self::stackedStat('Validation', e(Str::headline($record->validation_status ?? 'pending'))).'
+                    '.self::stackedStat('Enabled', $record->enabled ? 'Yes' : 'No').'
+                </div>
+            </div>
+        ';
+
+        return self::infoCard('Recommended Next Step', 'A simple operator recommendation based on the current state.', $body);
     }
 
     protected static function pluginIdentity(?ExtensionPlugin $record): string
@@ -253,6 +424,7 @@ class ExtensionPluginResource extends Resource
         return self::stackedLines([
             '<div class="text-base font-semibold text-gray-950 dark:text-white">'.e($record->name).'</div>',
             '<div class="text-sm text-gray-600 dark:text-gray-300">Version '.e($record->version).' · '.e($record->description ?: 'No description provided.').'</div>',
+            '<div class="text-xs text-gray-500 dark:text-gray-400">Class: '.e($record->class_name ?: 'Unknown').'</div>',
             '<div class="text-xs text-gray-500 dark:text-gray-400">Use the header actions for one-off runs. Use settings for defaults and automation.</div>',
         ]);
     }
@@ -295,6 +467,17 @@ class ExtensionPluginResource extends Resource
         return '<div class="flex flex-wrap gap-2">'.$pills.'</div>';
     }
 
+    protected static function infoCard(string $title, string $description, string $content): string
+    {
+        return '
+            <div class="h-full rounded-[1.5rem] border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                <div class="text-sm font-semibold text-gray-950 dark:text-white">'.e($title).'</div>
+                <div class="mt-1 text-sm text-gray-500 dark:text-gray-400">'.e($description).'</div>
+                <div class="mt-4">'.$content.'</div>
+            </div>
+        ';
+    }
+
     protected static function stackedLines(array $lines): string
     {
         $content = collect($lines)
@@ -305,8 +488,101 @@ class ExtensionPluginResource extends Resource
         return '<div class="space-y-2">'.$content.'</div>';
     }
 
+    protected static function stackedStat(string $label, string $value): string
+    {
+        return '
+            <div class="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-800 dark:bg-gray-950">
+                <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">'.e($label).'</div>
+                <div class="mt-1 text-sm font-semibold text-gray-950 dark:text-white">'.$value.'</div>
+            </div>
+        ';
+    }
+
+    protected static function statPill(string $label, string $value, string $hint): string
+    {
+        return '
+            <div class="rounded-2xl border border-gray-200 bg-white/80 px-4 py-4 dark:border-gray-800 dark:bg-gray-900/80">
+                <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">'.e($label).'</div>
+                <div class="mt-1 text-sm font-semibold text-gray-950 dark:text-white">'.$value.'</div>
+                <div class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">'.e($hint).'</div>
+            </div>
+        ';
+    }
+
+    protected static function statusBadge(ExtensionPlugin $record): string
+    {
+        if (! $record->enabled) {
+            return '<span class="inline-flex items-center rounded-full border border-gray-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:border-gray-800 dark:bg-gray-900/80 dark:text-gray-300">Disabled</span>';
+        }
+
+        if ($record->validation_status !== 'valid') {
+            return '<span class="inline-flex items-center rounded-full border border-warning-200 bg-warning-50 px-3 py-1.5 text-xs font-semibold text-warning-700 dark:border-warning-800 dark:bg-warning-950/40 dark:text-warning-300">Needs validation</span>';
+        }
+
+        return '<span class="inline-flex items-center rounded-full border border-success-200 bg-success-50 px-3 py-1.5 text-xs font-semibold text-success-700 dark:border-success-800 dark:bg-success-950/40 dark:text-success-300">Enabled and ready</span>';
+    }
+
+    protected static function runStatusBadge(ExtensionPluginRun $run): string
+    {
+        return match ($run->status) {
+            'completed' => '<span class="inline-flex items-center rounded-full border border-success-200 bg-success-50 px-3 py-1.5 text-xs font-semibold text-success-700 dark:border-success-800 dark:bg-success-950/40 dark:text-success-300">Last run completed</span>',
+            'failed' => '<span class="inline-flex items-center rounded-full border border-danger-200 bg-danger-50 px-3 py-1.5 text-xs font-semibold text-danger-700 dark:border-danger-800 dark:bg-danger-950/40 dark:text-danger-300">Last run failed</span>',
+            'running' => '<span class="inline-flex items-center rounded-full border border-warning-200 bg-warning-50 px-3 py-1.5 text-xs font-semibold text-warning-700 dark:border-warning-800 dark:bg-warning-950/40 dark:text-warning-300">Run in progress</span>',
+            default => self::mutedBadge(Str::headline($run->status)),
+        };
+    }
+
+    protected static function mutedBadge(string $label): string
+    {
+        return '<span class="inline-flex items-center rounded-full border border-gray-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:border-gray-800 dark:bg-gray-900/80 dark:text-gray-300">'.e($label).'</span>';
+    }
+
     protected static function mutedMessage(string $message): string
     {
         return '<div class="text-sm text-gray-500 dark:text-gray-400">'.e($message).'</div>';
+    }
+
+    protected static function latestRun(?ExtensionPlugin $record): ?ExtensionPluginRun
+    {
+        return $record?->runs()->first();
+    }
+
+    protected static function focusRun(?ExtensionPlugin $record): ?ExtensionPluginRun
+    {
+        if (! $record) {
+            return null;
+        }
+
+        return $record->runs()
+            ->orderByRaw("case when status = 'running' then 0 else 1 end")
+            ->latest('created_at')
+            ->first();
+    }
+
+    protected static function targetSummary(ExtensionPlugin $record): string
+    {
+        return self::playlistLabel($record->getSetting('default_playlist_id')).' · '.self::epgLabel($record->getSetting('default_epg_id'));
+    }
+
+    protected static function playlistLabel(mixed $playlistId): string
+    {
+        if (! $playlistId) {
+            return 'No playlist default';
+        }
+
+        $playlist = Playlist::query()->find($playlistId);
+
+        return $playlist ? $playlist->name.' (#'.$playlist->id.')' : 'Playlist #'.$playlistId;
+    }
+
+    protected static function epgLabel(mixed $epgId): string
+    {
+        if (! $epgId) {
+            return 'No EPG default';
+        }
+
+        $epg = Epg::query()->find($epgId);
+
+        return $epg ? $epg->name.' (#'.$epg->id.')' : 'EPG #'.$epgId;
     }
 }
