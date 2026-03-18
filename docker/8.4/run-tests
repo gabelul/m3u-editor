@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+
+set -eu
+
+cd /var/www/html
+
+mkdir -p \
+    bootstrap/cache \
+    database \
+    storage/framework/cache/data \
+    storage/framework/sessions \
+    storage/framework/testing \
+    storage/framework/views
+
+touch database/database.sqlite database/jobs.sqlite
+
+if [ ! -f .env ] && [ -f .env.example ]; then
+    cp .env.example .env
+fi
+
+export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
+export REDIS_SERVER_PORT="${REDIS_SERVER_PORT:-36790}"
+export REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+
+if [ -n "${REDIS_PASSWORD}" ]; then
+    redis-server --daemonize yes --bind "${REDIS_HOST}" --port "${REDIS_SERVER_PORT}" --requirepass "${REDIS_PASSWORD}" --save "" --appendonly no
+else
+    redis-server --daemonize yes --bind "${REDIS_HOST}" --port "${REDIS_SERVER_PORT}" --save "" --appendonly no
+fi
+
+exec php artisan test "$@"

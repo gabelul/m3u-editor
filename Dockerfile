@@ -10,6 +10,7 @@
 #           --build-arg M3U_PROXY_BRANCH=dev
 ARG M3U_PROXY_REPO=https://github.com/sparkison/m3u-proxy.git
 ARG M3U_PROXY_BRANCH=master
+ARG INSTALL_DEV_DEPENDENCIES=false
 
 # Optional: use a local m3u-proxy directory instead of cloning from git.
 # Must be a path relative to the Docker build context.
@@ -24,12 +25,19 @@ ARG M3U_PROXY_LOCAL_DIR=""
 FROM composer:2 AS composer_builder
 WORKDIR /app
 
+ARG INSTALL_DEV_DEPENDENCIES=false
+
 # Copy composer metadata first for better layer caching
 COPY composer.json composer.lock ./
 
 # Install dependencies first (cached if composer files unchanged)
-# Some platform requirements (ext-intl, ext-pcntl) are provided by the runtime image
-RUN composer install --no-dev --no-interaction --no-progress -o --prefer-dist --ignore-platform-reqs --no-scripts --no-autoloader
+# Some platform requirements (ext-intl, ext-pcntl) are provided by the runtime image.
+# The dev compose file sets INSTALL_DEV_DEPENDENCIES=true so PHPUnit/Pest are available.
+RUN if [ "${INSTALL_DEV_DEPENDENCIES}" = "true" ]; then \
+        composer install --no-interaction --no-progress -o --prefer-dist --ignore-platform-reqs --no-scripts --no-autoloader; \
+    else \
+        composer install --no-dev --no-interaction --no-progress -o --prefer-dist --ignore-platform-reqs --no-scripts --no-autoloader; \
+    fi
 
 # Copy application code for autoload generation
 COPY app/ ./app/
@@ -40,7 +48,11 @@ COPY routes/ ./routes/
 COPY artisan ./
 
 # Generate optimized autoloader
-RUN composer dump-autoload --no-dev --optimize --classmap-authoritative
+RUN if [ "${INSTALL_DEV_DEPENDENCIES}" = "true" ]; then \
+        composer dump-autoload --optimize; \
+    else \
+        composer dump-autoload --no-dev --optimize --classmap-authoritative; \
+    fi
 
 ########################################
 # Stage 2: Node builder - builds frontend assets
@@ -230,6 +242,7 @@ COPY --chown=root:root ./docker/8.4/nginx/nginx.conf /etc/nginx/nginx.tmpl
 COPY --chown=root:root ./docker/8.4/nginx/laravel.conf /etc/nginx/conf.d/laravel.tmpl
 COPY --chown=root:root ./docker/8.4/nginx/xtream.conf /etc/nginx/conf.d/xtream.tmpl
 COPY --chown=root:root ./docker/8.4/www.conf /etc/php84/php-fpm.d/www.tmpl
+COPY --chmod=755 ./docker/8.4/run-tests /usr/local/bin/run-tests
 
 # Copy container startup script
 COPY --chmod=755 start-container /usr/local/bin/start-container
@@ -270,7 +283,13 @@ RUN echo -e '#!/bin/bash\nphp artisan app:"$@"' > /usr/bin/m3ue && \
     chmod +x /usr/bin/m3ue
 
 # Ensure proper permissions for storage and cache directories
-RUN chown -R ${WWWUSER}:${WWWGROUP} /var/www/html && \
+RUN mkdir -p \
+        /var/www/html/storage/framework/cache/data \
+        /var/www/html/storage/framework/sessions \
+        /var/www/html/storage/framework/testing \
+        /var/www/html/storage/framework/views \
+        /var/www/html/bootstrap/cache && \
+    chown -R ${WWWUSER}:${WWWGROUP} /var/www/html && \
     chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
 
 # Note: Ports are configured via environment variables (APP_PORT, REVERB_PORT, etc.)

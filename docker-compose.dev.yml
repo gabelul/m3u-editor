@@ -11,6 +11,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        INSTALL_DEV_DEPENDENCIES: "true"
     container_name: m3u-editor-dev
     environment:
       # Timezone
@@ -63,6 +65,35 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s  # Longer start period — first build downloads ML model
+
+  m3u-editor-dev-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV_DEPENDENCIES: "true"
+    container_name: m3u-editor-dev-test
+    entrypoint: ["/usr/local/bin/run-tests"]
+    environment:
+      - APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      - APP_ENV=testing
+      - BROADCAST_CONNECTION=log
+      - DB_CONNECTION=sqlite_testing
+      - DB_DATABASE=":memory:"
+      - CACHE_STORE=array
+      - MAIL_MAILER=array
+      - PULSE_ENABLED=false
+      - QUEUE_CONNECTION=sync
+      - REDIS_HOST=127.0.0.1
+      - REDIS_PASSWORD=
+      - REDIS_SERVER_PORT=36790
+      - REVERB_APP_ID=test
+      - REVERB_APP_KEY=test
+      - REVERB_APP_SECRET=test
+      - SESSION_DRIVER=array
+      - TELESCOPE_ENABLED=false
+    profiles:
+      - test
 volumes:
   pgdata_dev:
     driver: local

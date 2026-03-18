@@ -376,6 +376,15 @@ echo "" > "${nginx_log_file}"
 # Link environment file
 ln -sf "${env_file}" .env
 
+# Ensure required Laravel runtime directories exist even when the build context
+# excludes transient cache/session/view folders.
+mkdir -p \
+    storage/framework/cache/data \
+    storage/framework/sessions \
+    storage/framework/testing \
+    storage/framework/views \
+    bootstrap/cache
+
 # Remove any stale Laravel bootstrap cache files that might reference dev-only
 # service providers (e.g. beyondcode/laravel-dump-server). These files can be
 # created during build stages and copied into the image; remove them here so

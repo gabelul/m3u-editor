@@ -28,13 +28,6 @@ data/
 db-dumps/
 database/*.sqlite*
 
-# Testing
-tests/
-stubs/
-.phpunit*
-phpunit.xml
-Pest.php
-
 # Scripts (keep artisan, exclude build scripts)
 *.sh
 rebuild.sh
@@ -65,6 +58,9 @@ screenshots/
 
 # OS
 .DS_Store
+._*
+**/.DS_Store
+**/._*
 Thumbs.db
 
 # Environment files
