@@ -17,4 +17,28 @@ class PluginExecutionContext
         public readonly ?User $user,
         public readonly array $settings,
     ) {}
+
+    public function log(string $message, string $level = 'info', array $context = []): void
+    {
+        $this->run->logs()->create([
+            'level' => $level,
+            'message' => $message,
+            'context' => $context,
+        ]);
+    }
+
+    public function info(string $message, array $context = []): void
+    {
+        $this->log($message, 'info', $context);
+    }
+
+    public function warning(string $message, array $context = []): void
+    {
+        $this->log($message, 'warning', $context);
+    }
+
+    public function error(string $message, array $context = []): void
+    {
+        $this->log($message, 'error', $context);
+    }
 }

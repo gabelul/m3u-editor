@@ -97,20 +97,53 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
     {
         [$playlist, $epg] = $this->resolveTargets($payload, $context->settings);
         if (! $playlist || ! $epg) {
+            $context->error('EPG Repair scan failed because the selected playlist or EPG could not be resolved.', [
+                'playlist_id' => $payload['playlist_id'] ?? $context->settings['default_playlist_id'] ?? null,
+                'epg_id' => $payload['epg_id'] ?? $context->settings['default_epg_id'] ?? null,
+            ]);
             return PluginActionResult::failure('Playlist or EPG could not be resolved.');
         }
 
         $hoursAhead = max(1, (int) ($payload['hours_ahead'] ?? $context->settings['hours_ahead'] ?? 12));
         $threshold = min(1, max(0.1, (float) ($payload['confidence_threshold'] ?? $context->settings['confidence_threshold'] ?? 0.65)));
 
+        $context->info('Starting EPG Repair scan.', [
+            'playlist_id' => $playlist->id,
+            'playlist_name' => $playlist->name,
+            'epg_id' => $epg->id,
+            'epg_name' => $epg->name,
+            'hours_ahead' => $hoursAhead,
+            'confidence_threshold' => $threshold,
+            'dry_run' => $context->dryRun || $implicitDryRun,
+        ]);
+
         $issues = $this->buildRepairReport($playlist, $epg, $hoursAhead, $threshold);
 
-        return PluginActionResult::success(
-            sprintf(
+        if ($issues['totals']['channels_scanned'] === 0) {
+            $context->warning('Scan found no enabled live channels in the selected playlist.', [
+                'playlist_id' => $playlist->id,
+                'playlist_name' => $playlist->name,
+            ]);
+        } else {
+            $context->info('Scan completed.', [
+                'channels_scanned' => $issues['totals']['channels_scanned'],
+                'issues_found' => $issues['totals']['issues_found'],
+                'repair_candidates' => $issues['totals']['repair_candidates'],
+                'epg_channels_available' => $issues['totals']['epg_channels_available'],
+                'channels_with_existing_programmes' => $issues['totals']['channels_with_existing_programmes'],
+            ]);
+        }
+
+        $summary = $issues['totals']['channels_scanned'] === 0
+            ? 'Scanned 0 channels. The selected playlist currently has no enabled live channels to inspect.'
+            : sprintf(
                 'Scanned %d channels and found %d repair candidate(s).',
                 $issues['totals']['channels_scanned'],
                 $issues['totals']['repair_candidates']
-            ),
+            );
+
+        return PluginActionResult::success(
+            $summary,
             [
                 'dry_run' => $context->dryRun || $implicitDryRun,
                 ...$issues,
@@ -122,11 +155,24 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
     {
         [$playlist, $epg] = $this->resolveTargets($payload, $context->settings);
         if (! $playlist || ! $epg) {
+            $context->error('EPG Repair apply failed because the selected playlist or EPG could not be resolved.', [
+                'playlist_id' => $payload['playlist_id'] ?? $context->settings['default_playlist_id'] ?? null,
+                'epg_id' => $payload['epg_id'] ?? $context->settings['default_epg_id'] ?? null,
+            ]);
             return PluginActionResult::failure('Playlist or EPG could not be resolved.');
         }
 
         $hoursAhead = max(1, (int) ($payload['hours_ahead'] ?? $context->settings['hours_ahead'] ?? 12));
         $threshold = min(1, max(0.1, (float) ($payload['confidence_threshold'] ?? $context->settings['confidence_threshold'] ?? 0.65)));
+
+        $context->info('Starting EPG Repair apply run.', [
+            'playlist_id' => $playlist->id,
+            'playlist_name' => $playlist->name,
+            'epg_id' => $epg->id,
+            'epg_name' => $epg->name,
+            'hours_ahead' => $hoursAhead,
+            'confidence_threshold' => $threshold,
+        ]);
 
         $report = $this->buildRepairReport($playlist, $epg, $hoursAhead, $threshold);
         $applied = 0;
@@ -142,7 +188,21 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                     'epg_channel_id' => $item['suggested_epg_channel_id'],
                 ]);
 
+            $context->info('Applied EPG repair to channel.', [
+                'channel_id' => $item['channel_id'],
+                'channel_name' => $item['channel_name'],
+                'suggested_epg_channel_id' => $item['suggested_epg_channel_id'],
+                'suggested_epg_channel_name' => $item['suggested_epg_channel_name'],
+                'confidence' => $item['confidence'],
+            ]);
             $applied++;
+        }
+
+        if ($applied === 0) {
+            $context->warning('Apply finished with no repairs applied.', [
+                'issues_found' => $report['totals']['issues_found'],
+                'repair_candidates' => $report['totals']['repair_candidates'],
+            ]);
         }
 
         return PluginActionResult::success(
@@ -222,6 +282,8 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 'channels_scanned' => $channels->count(),
                 'issues_found' => $results->count(),
                 'repair_candidates' => $results->where('repairable', true)->count(),
+                'epg_channels_available' => $epgChannels->count(),
+                'channels_with_existing_programmes' => count($mappedChannelIds),
             ],
         ];
     }

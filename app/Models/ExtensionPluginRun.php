@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ExtensionPluginRun extends Model
 {
@@ -42,5 +43,10 @@ class ExtensionPluginRun extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function logs(): HasMany
+    {
+        return $this->hasMany(ExtensionPluginRunLog::class)->latest();
     }
 }

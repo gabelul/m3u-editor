@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 class ExtensionPlugin extends Model
 {
@@ -49,6 +50,18 @@ class ExtensionPlugin extends Model
     public function runs(): HasMany
     {
         return $this->hasMany(ExtensionPluginRun::class)->latest();
+    }
+
+    public function logs(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            ExtensionPluginRunLog::class,
+            ExtensionPluginRun::class,
+            'extension_plugin_id',
+            'extension_plugin_run_id',
+            'id',
+            'id',
+        )->latest('extension_plugin_run_logs.created_at');
     }
 
     public function getActionDefinition(string $actionId): ?array

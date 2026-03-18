@@ -28,7 +28,7 @@ class PluginSchemaMapper
     {
         $action = $plugin->getActionDefinition($actionId);
 
-        return $this->componentsForFields($action['fields'] ?? []);
+        return $this->componentsForFields($action['fields'] ?? [], '', $plugin->settings ?? []);
     }
 
     public function settingsRules(?ExtensionPlugin $plugin): array
@@ -63,21 +63,23 @@ class PluginSchemaMapper
         return $defaults;
     }
 
-    private function componentsForFields(array $fields, string $prefix = ''): array
+    private function componentsForFields(array $fields, string $prefix = '', array $existing = []): array
     {
         return collect($fields)
             ->filter(fn (array $field): bool => filled($field['id'] ?? null))
-            ->map(fn (array $field) => $this->componentForField($field, $prefix))
+            ->map(fn (array $field) => $this->componentForField($field, $prefix, $existing))
             ->all();
     }
 
-    private function componentForField(array $field, string $prefix = '')
+    private function componentForField(array $field, string $prefix = '', array $existing = [])
     {
         $name = $prefix.($field['id'] ?? '');
         $type = $field['type'] ?? 'text';
         $label = $field['label'] ?? Str::headline((string) ($field['id'] ?? 'value'));
         $helperText = $field['helper_text'] ?? null;
         $required = (bool) ($field['required'] ?? false);
+        $defaultKey = $field['default_from_setting'] ?? ($field['id'] ?? '');
+        $default = Arr::get($existing, $defaultKey, $field['default'] ?? null);
 
         $component = match ($type) {
             'boolean' => Toggle::make($name),
@@ -91,7 +93,7 @@ class PluginSchemaMapper
 
         return $component
             ->label($label)
-            ->default($field['default'] ?? null)
+            ->default($default)
             ->helperText($helperText)
             ->required($required);
     }

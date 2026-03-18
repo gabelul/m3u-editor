@@ -12,7 +12,7 @@ class RunsRelationManager extends RelationManager
 {
     protected static string $relationship = 'runs';
 
-    protected static ?string $title = 'Execution Log';
+    protected static ?string $title = 'Run History';
 
     public function form(Schema $schema): Schema
     {
@@ -22,9 +22,13 @@ class RunsRelationManager extends RelationManager
     public function table(Table $table): Table
     {
         return $table
+            ->poll('3s')
             ->defaultSort('created_at', 'desc')
+            ->emptyStateHeading('No run history yet')
+            ->emptyStateDescription('Queue a plugin action from the page header to create the first run.')
             ->columns([
                 TextColumn::make('created_at')
+                    ->label('Queued At')
                     ->dateTime()
                     ->sortable(),
                 TextColumn::make('status')
@@ -45,6 +49,14 @@ class RunsRelationManager extends RelationManager
                     ->toggleable(),
                 IconColumn::make('dry_run')
                     ->boolean(),
+                TextColumn::make('result.data.totals.repair_candidates')
+                    ->label('Candidates')
+                    ->numeric()
+                    ->toggleable(),
+                TextColumn::make('result.data.totals.repairs_applied')
+                    ->label('Applied')
+                    ->numeric()
+                    ->toggleable(),
                 TextColumn::make('summary')
                     ->wrap()
                     ->limit(100),
