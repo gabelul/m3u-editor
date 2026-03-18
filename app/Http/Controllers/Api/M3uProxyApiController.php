@@ -358,16 +358,13 @@ class M3uProxyApiController extends Controller
                 return;
             }
 
-            // Only decrement on stream_stopped events
-            // This ensures we decrement exactly once per stream, avoiding race conditions
+            // Only clean up on stream_stopped events
             if ($eventType === 'stream_stopped') {
                 ProfileService::decrementConnections($profile, $streamId);
 
-                Log::debug('Decremented profile connections via webhook', [
+                Log::debug('Cleaned up stream tracking via webhook', [
                     'profile_id' => $profileId,
                     'stream_id' => $streamId,
-                    'event_type' => $eventType,
-                    'new_count' => ProfileService::getConnectionCount($profile),
                 ]);
             }
         } catch (Exception $e) {

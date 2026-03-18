@@ -23,13 +23,13 @@ use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Redirect;
 use Illuminate\Support\Str;
 use Spatie\Tags\Tag;
+use Symfony\Component\HttpFoundation\JsonResponse;
 
 class XtreamApiController extends Controller
 {
@@ -426,9 +426,12 @@ class XtreamApiController extends Controller
             }
             $outputFormats = ['m3u8', 'ts'];
             if ($playlist->enable_proxy) {
-                if ($playlist->xtream_config ?? false) {
-                    // We'll restrict the format to the format the playlist was imported in
-                    $proxyOutput = $playlist->xtream_config['output'] ?? 'ts';
+                // For PlaylistAlias, xtream_config is a list of configs — use effective playlist's config for output format
+                $xtreamConfig = $playlist instanceof PlaylistAlias
+                    ? ($playlist->getEffectivePlaylist()?->xtream_config ?? null)
+                    : ($playlist->xtream_config ?? null);
+                if ($xtreamConfig) {
+                    $proxyOutput = $xtreamConfig['output'] ?? 'ts';
                     $outputFormats = $proxyOutput === 'hls' ? ['m3u8'] : [$proxyOutput];
                 }
                 $activeConnections = M3uProxyService::getPlaylistActiveStreamsCount($playlist);
@@ -1874,7 +1877,7 @@ class XtreamApiController extends Controller
      * This method handles the EPG request by authenticating the user and redirecting
      * to the appropriate EPG generation URL based on the playlist UUID.
      *
-     * @return RedirectResponse
+     * @return Response|JsonResponse
      */
     public function epg(Request $request)
     {
@@ -1890,8 +1893,10 @@ class XtreamApiController extends Controller
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
-        // If here, user is authenticated
-        return redirect()->to(route('epg.generate', ['uuid' => $playlist->uuid]));
+        // Serve EPG directly instead of redirecting, so it works on the Xtream-only port
+        return app()->call('App\\Http\\Controllers\\EpgGenerateController@__invoke', [
+            'uuid' => $playlist->uuid,
+        ]);
     }
 
     /**
