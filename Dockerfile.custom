@@ -40,6 +40,19 @@ COPY --chown=m3ue:m3ue app/Console/Commands/NormalizeChannelTitles.php /var/www/
 # Adds title_normalized column to channels table
 COPY --chown=m3ue:m3ue database/migrations/2026_03_07_030000_add_title_normalized_to_channels.php /var/www/html/database/migrations/2026_03_07_030000_add_title_normalized_to_channels.php
 
+# ---------- Composer autoloader ----------
+# The upstream image's autoloader doesn't know about our new classes.
+# Patch both autoload_classmap.php and autoload_static.php so Laravel can find them.
+# We use sed to insert entries next to existing known classes (alphabetical neighbors).
+RUN sed -i "/EpgCacheService/a\\    'App\\\\\\\\Services\\\\\\\\ChannelTitleNormalizerService' => \$baseDir . '/app/Services/ChannelTitleNormalizerService.php'," \
+        /var/www/html/vendor/composer/autoload_classmap.php && \
+    sed -i "/DisableMfa.*Commands/a\\    'App\\\\\\\\Console\\\\\\\\Commands\\\\\\\\NormalizeChannelTitles' => \$baseDir . '/app/Console/Commands/NormalizeChannelTitles.php'," \
+        /var/www/html/vendor/composer/autoload_classmap.php && \
+    sed -i "/EpgCacheService/a\\        'App\\\\\\\\Services\\\\\\\\ChannelTitleNormalizerService' => __DIR__ . '/../..' . '/app/Services/ChannelTitleNormalizerService.php'," \
+        /var/www/html/vendor/composer/autoload_static.php && \
+    sed -i "/DisableMfa.*Commands/a\\        'App\\\\\\\\Console\\\\\\\\Commands\\\\\\\\NormalizeChannelTitles' => __DIR__ . '/../..' . '/app/Console/Commands/NormalizeChannelTitles.php'," \
+        /var/www/html/vendor/composer/autoload_static.php
+
 # ---------- Supervisor config ----------
 # Appends ml-matcher program block to the existing supervisord.conf
 # Using echo -e with \n instead of heredoc for Docker build compatibility
