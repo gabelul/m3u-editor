@@ -7,6 +7,7 @@ use App\Services\EmbyJellyfinService;
 use App\Services\NetworkBroadcastService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 beforeEach(function () {
     Http::fake([
@@ -230,6 +231,43 @@ it('preserves playback timeline across on-demand idle stop and reconnect start',
     Carbon::setTestNow(now()->addSeconds(30));
 
     expect($network->fresh()->getPersistedBroadcastSeekForNow())->toBe(630);
+
+    Carbon::setTestNow();
+});
+
+it('logs a warning and resets seek to 0 when no programme is active during playback reference preserve', function () {
+    Carbon::setTestNow(now());
+    Log::spy();
+
+    // Network that was broadcasting but has no active programme (e.g. schedule gap)
+    $network = Network::factory()->create([
+        'enabled' => true,
+        'broadcast_enabled' => true,
+        'broadcast_requested' => true,
+        'broadcast_on_demand' => true,
+        'broadcast_started_at' => now()->subMinutes(5),
+        'broadcast_pid' => 43210,
+        // No persisted initial offset — forces the fallback path
+        'broadcast_initial_offset_seconds' => null,
+        'broadcast_programme_id' => null,
+    ]);
+
+    // Deliberately create no NetworkProgramme so getCurrentProgramme() returns null
+
+    $service = app(NetworkBroadcastService::class);
+    $service->stop($network, keepRequested: true, preservePlaybackReference: true);
+
+    // Without a programme, the preserve branch is skipped (resumeProgrammeId stays null)
+    // and a full stop is performed — but the warning must still be emitted.
+    Log::shouldHaveReceived('warning')
+        ->once()
+        ->withArgs(fn (string $message) => str_contains($message, 'No active programme'));
+
+    $network->refresh();
+    // Full stop: broadcast_started_at cleared, offset cleared
+    expect($network->broadcast_started_at)->toBeNull();
+    expect($network->broadcast_initial_offset_seconds)->toBeNull();
+    expect($network->broadcast_requested)->toBeTrue();
 
     Carbon::setTestNow();
 });

@@ -555,9 +555,30 @@ class NetworkBroadcastService
         $resumeProgrammeId = $network->broadcast_programme_id;
 
         if ($preservePlaybackReference) {
-            $resumeOffset = $network->getPersistedBroadcastSeekForNow() ?? $network->getCurrentSeekPosition();
+            $resumeOffset = $network->getPersistedBroadcastSeekForNow();
 
-            if (! $resumeProgrammeId) {
+            if ($resumeOffset === null) {
+                // No persisted reference — fall back to the live programme position.
+                // Resolve getCurrentProgramme() once so we can both warn and compute
+                // the offset without issuing two separate queries.
+                $currentProgramme = $network->getCurrentProgramme();
+
+                if (! $currentProgramme) {
+                    Log::warning('No active programme when preserving broadcast playback reference; seek offset will reset to 0', [
+                        'network_id' => $network->id,
+                        'network_name' => $network->name,
+                        'resume_programme_id' => $resumeProgrammeId,
+                    ]);
+                }
+
+                $resumeOffset = $currentProgramme
+                    ? (int) $currentProgramme->start_time->diffInSeconds(now(), false)
+                    : 0;
+
+                if (! $resumeProgrammeId) {
+                    $resumeProgrammeId = $currentProgramme?->id;
+                }
+            } elseif (! $resumeProgrammeId) {
                 $resumeProgrammeId = $network->getCurrentProgramme()?->id;
             }
         }
