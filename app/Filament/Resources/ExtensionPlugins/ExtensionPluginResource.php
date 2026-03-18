@@ -8,6 +8,7 @@ use App\Filament\Resources\ExtensionPlugins\RelationManagers\LogsRelationManager
 use App\Filament\Resources\ExtensionPlugins\RelationManagers\RunsRelationManager;
 use App\Models\ExtensionPlugin;
 use App\Plugins\PluginSchemaMapper;
+use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Resources\Resource;
@@ -19,6 +20,8 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Support\HtmlString;
+use Illuminate\Support\Str;
 
 class ExtensionPluginResource extends Resource
 {
@@ -58,76 +61,52 @@ class ExtensionPluginResource extends Resource
                     Tab::make('Overview')
                         ->icon('heroicon-m-puzzle-piece')
                         ->schema([
-                            Section::make('Plugin')
+                            Section::make('Status')
+                                ->compact()
+                                ->columns(3)
                                 ->schema([
+                                    Placeholder::make('plugin_status_snapshot')
+                                        ->label('Plugin Status')
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pluginStatusSnapshot($record))),
+                                    Placeholder::make('latest_run_snapshot')
+                                        ->label('Latest Run')
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::latestRunSnapshot($record))),
+                                    Placeholder::make('automation_snapshot')
+                                        ->label('Automation')
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::automationSnapshot($record))),
+                                ]),
+                            Section::make('Overview')
+                                ->compact()
+                                ->schema([
+                                    Placeholder::make('plugin_identity')
+                                        ->label('Plugin')
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pluginIdentity($record))),
                                     Grid::make(2)
                                         ->schema([
-                                            TextInput::make('plugin_id')
-                                                ->disabled(),
-                                            TextInput::make('name')
-                                                ->disabled(),
-                                            TextInput::make('version')
-                                                ->disabled(),
-                                            TextInput::make('api_version')
-                                                ->label('Plugin API')
-                                                ->disabled(),
+                                            Placeholder::make('capabilities_display')
+                                                ->label('Capabilities')
+                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pillList(
+                                                    collect($record?->capabilities ?? [])
+                                                        ->map(fn (string $capability) => str($capability)->replace('_', ' ')->headline())
+                                                        ->all(),
+                                                    'This plugin has not declared any capabilities yet.',
+                                                ))),
+                                            Placeholder::make('actions_display')
+                                                ->label('Operator Actions')
+                                                ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::operatorActions($record))),
                                         ]),
-                                    Textarea::make('description')
-                                        ->rows(3)
-                                        ->disabled()
-                                        ->columnSpanFull(),
-                                ]),
-                            Section::make('Capabilities')
-                                ->description('What this plugin can do, which hooks it listens to, and which operator actions it exposes.')
-                                ->schema([
-                                    Textarea::make('capabilities_display')
-                                        ->label('Capabilities')
-                                        ->disabled()
-                                        ->rows(4)
-                                        ->dehydrated(false)
-                                        ->formatStateUsing(fn (?ExtensionPlugin $record) => collect($record?->capabilities ?? [])
-                                            ->map(fn (string $capability) => str($capability)->replace('_', ' ')->headline())
-                                            ->implode("\n")),
-                                    Textarea::make('hooks_display')
+                                    Placeholder::make('hooks_display')
                                         ->label('Hook Subscriptions')
-                                        ->disabled()
-                                        ->rows(4)
-                                        ->dehydrated(false)
-                                        ->formatStateUsing(fn (?ExtensionPlugin $record) => collect($record?->hooks ?? [])->implode("\n")),
-                                    Textarea::make('actions_display')
-                                        ->label('Operator Actions')
-                                        ->disabled()
-                                        ->rows(5)
-                                        ->dehydrated(false)
-                                        ->formatStateUsing(fn (?ExtensionPlugin $record) => collect($record?->actions ?? [])
-                                            ->map(fn (array $action) => ($action['label'] ?? str($action['id'] ?? 'action')->headline()).' ['.($action['id'] ?? 'unknown').']')
-                                            ->implode("\n")),
-                                    Textarea::make('latest_run_summary')
-                                        ->label('Latest Run Summary')
-                                        ->disabled()
-                                        ->rows(4)
-                                        ->dehydrated(false)
-                                        ->formatStateUsing(function (?ExtensionPlugin $record): string {
-                                            $latestRun = $record?->runs()->first();
-
-                                            if (! $latestRun) {
-                                                return 'No plugin runs recorded yet.';
-                                            }
-
-                                            return implode("\n", array_filter([
-                                                'Status: '.str($latestRun->status)->headline(),
-                                                'Started: '.optional($latestRun->started_at)->toDateTimeString(),
-                                                'Finished: '.optional($latestRun->finished_at)->toDateTimeString(),
-                                                'Summary: '.($latestRun->summary ?? 'No summary available.'),
-                                            ]));
-                                        })
-                                        ->columnSpanFull(),
+                                        ->content(fn (?ExtensionPlugin $record): HtmlString => new HtmlString(self::pillList(
+                                            collect($record?->hooks ?? [])->all(),
+                                            'This plugin only runs when you trigger one of its header actions.',
+                                        ))),
                                 ]),
-                        ]),
-                    Tab::make('Runtime')
-                        ->icon('heroicon-m-command-line')
-                        ->schema([
-                            Section::make('Runtime')
+                            Section::make('Advanced Diagnostics')
+                                ->compact()
+                                ->collapsible()
+                                ->collapsed()
+                                ->description('Only useful when a plugin is invalid, missing, or behaving unexpectedly.')
                                 ->schema([
                                     Grid::make(2)
                                         ->schema([
@@ -210,5 +189,121 @@ class ExtensionPluginResource extends Resource
             'index' => ListExtensionPlugins::route('/'),
             'edit' => EditExtensionPlugin::route('/{record}/edit'),
         ];
+    }
+
+    protected static function pluginStatusSnapshot(?ExtensionPlugin $record): string
+    {
+        $enabled = $record?->enabled
+            ? '<span class="text-success-600 dark:text-success-400 font-medium">Enabled</span>'
+            : '<span class="text-gray-600 dark:text-gray-300 font-medium">Disabled</span>';
+        $validation = match ($record?->validation_status) {
+            'valid' => '<span class="text-success-600 dark:text-success-400 font-medium">Validated and ready</span>',
+            'invalid' => '<span class="text-danger-600 dark:text-danger-400 font-medium">Validation failed</span>',
+            default => '<span class="text-warning-600 dark:text-warning-400 font-medium">Not validated yet</span>',
+        };
+
+        return self::stackedLines([
+            $enabled,
+            $validation,
+            'Plugin ID: <span class="font-mono text-xs">'.e($record?->plugin_id ?? 'unknown').'</span>',
+            'API: <span class="font-medium">'.e($record?->api_version ?? 'unknown').'</span>',
+        ]);
+    }
+
+    protected static function latestRunSnapshot(?ExtensionPlugin $record): string
+    {
+        $latestRun = $record?->runs()->first();
+
+        if (! $latestRun) {
+            return self::mutedMessage('No plugin runs recorded yet. Use the header actions to run the plugin once.');
+        }
+
+        return self::stackedLines([
+            '<span class="font-medium">'.e(Str::headline($latestRun->status)).'</span>',
+            $latestRun->started_at ? 'Started: '.e($latestRun->started_at->toDateTimeString()) : null,
+            $latestRun->finished_at ? 'Finished: '.e($latestRun->finished_at->toDateTimeString()) : null,
+            $latestRun->summary ? '<span class="text-sm">'.e($latestRun->summary).'</span>' : null,
+        ]);
+    }
+
+    protected static function automationSnapshot(?ExtensionPlugin $record): string
+    {
+        $autoScan = $record?->getSetting('auto_scan_on_epg_ready') ? 'Auto scan on EPG cache: enabled' : 'Auto scan on EPG cache: disabled';
+        $scheduled = $record?->getSetting('schedule_enabled')
+            ? 'Scheduled scans: '.(string) $record->getSetting('schedule_cron', 'enabled')
+            : 'Scheduled scans: disabled';
+
+        return self::stackedLines([
+            '<span class="font-medium">'.e($autoScan).'</span>',
+            '<span class="font-medium">'.e($scheduled).'</span>',
+            $record?->getSetting('default_playlist_id') ? 'Default playlist ID: '.e((string) $record->getSetting('default_playlist_id')) : null,
+            $record?->getSetting('default_epg_id') ? 'Default EPG ID: '.e((string) $record->getSetting('default_epg_id')) : null,
+        ]);
+    }
+
+    protected static function pluginIdentity(?ExtensionPlugin $record): string
+    {
+        if (! $record) {
+            return self::mutedMessage('No plugin record loaded.');
+        }
+
+        return self::stackedLines([
+            '<div class="text-base font-semibold text-gray-950 dark:text-white">'.e($record->name).'</div>',
+            '<div class="text-sm text-gray-600 dark:text-gray-300">Version '.e($record->version).' · '.e($record->description ?: 'No description provided.').'</div>',
+            '<div class="text-xs text-gray-500 dark:text-gray-400">Use the header actions for one-off runs. Use settings for defaults and automation.</div>',
+        ]);
+    }
+
+    protected static function operatorActions(?ExtensionPlugin $record): string
+    {
+        $actions = collect($record?->actions ?? [])
+            ->map(function (array $action): string {
+                $label = $action['label'] ?? Str::headline((string) ($action['id'] ?? 'Action'));
+                $notes = collect([
+                    ($action['dry_run'] ?? false) ? 'dry run' : null,
+                    ($action['requires_confirmation'] ?? false) ? 'needs confirmation' : null,
+                    ($action['destructive'] ?? false) ? 'destructive' : null,
+                ])->filter()->implode(' · ');
+
+                return '<div class="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-800">'.
+                    '<div class="font-medium text-gray-950 dark:text-white">'.e($label).'</div>'.
+                    '<div class="text-xs text-gray-500 dark:text-gray-400">'.e($notes !== '' ? $notes : 'manual action').'</div>'.
+                    '</div>';
+            })
+            ->implode('');
+
+        if ($actions === '') {
+            return self::mutedMessage('No operator actions were declared for this plugin.');
+        }
+
+        return '<div class="grid gap-2">'.$actions.'</div>';
+    }
+
+    protected static function pillList(array $items, string $emptyMessage): string
+    {
+        if ($items === []) {
+            return self::mutedMessage($emptyMessage);
+        }
+
+        $pills = collect($items)
+            ->map(fn (string $item) => '<span class="inline-flex items-center rounded-full border border-primary-200 bg-primary-50 px-2.5 py-1 text-xs font-medium text-primary-700 dark:border-primary-800 dark:bg-primary-950/40 dark:text-primary-300">'.e($item).'</span>')
+            ->implode(' ');
+
+        return '<div class="flex flex-wrap gap-2">'.$pills.'</div>';
+    }
+
+    protected static function stackedLines(array $lines): string
+    {
+        $content = collect($lines)
+            ->filter()
+            ->map(fn (string $line) => '<div class="text-sm text-gray-700 dark:text-gray-200">'.$line.'</div>')
+            ->implode('');
+
+        return '<div class="space-y-2">'.$content.'</div>';
+    }
+
+    protected static function mutedMessage(string $message): string
+    {
+        return '<div class="text-sm text-gray-500 dark:text-gray-400">'.e($message).'</div>';
     }
 }
