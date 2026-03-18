@@ -1,0 +1,131 @@
+<?php
+
+use App\Enums\Status;
+use App\Models\Channel;
+use App\Models\Epg;
+use App\Models\EpgChannel;
+use App\Models\ExtensionPlugin;
+use App\Models\Playlist;
+use App\Models\User;
+use App\Plugins\PluginManager;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+it('discovers the bundled epg repair plugin as a valid local plugin', function () {
+    $plugins = app(PluginManager::class)->discover();
+
+    expect($plugins)->toHaveCount(1);
+
+    $plugin = ExtensionPlugin::query()->where('plugin_id', 'epg-repair')->first();
+
+    expect($plugin)->not->toBeNull();
+    expect($plugin->validation_status)->toBe('valid');
+    expect($plugin->available)->toBeTrue();
+    expect($plugin->class_name)->toBe('AppLocalPlugins\\EpgRepair\\Plugin');
+    expect($plugin->capabilities)->toContain('epg_repair');
+    expect($plugin->actions)->toBeArray();
+});
+
+it('validates a discovered plugin from the registry', function () {
+    $plugin = app(PluginManager::class)->discover()[0];
+
+    $validated = app(PluginManager::class)->validate($plugin);
+
+    expect($validated->validation_status)->toBe('valid');
+    expect($validated->validation_errors)->toBe([]);
+});
+
+it('scans and applies epg repairs through the plugin manager', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::create([
+        'name' => 'Plugin Tester',
+        'email' => 'plugin-test-'.Str::random(10).'@example.com',
+        'password' => Hash::make('password'),
+        'email_verified_at' => now(),
+    ]);
+
+    $playlist = Playlist::create([
+        'name' => 'Plugin Test Playlist',
+        'uuid' => (string) Str::uuid(),
+        'url' => 'http://example.test/playlist.m3u',
+        'status' => Status::Completed,
+        'prefix' => 'test',
+        'channels' => 1,
+        'synced' => now(),
+        'id_channel_by' => 'stream_id',
+        'user_id' => $user->id,
+    ]);
+
+    $epg = Epg::create([
+        'name' => 'Plugin Test EPG',
+        'url' => 'http://example.test/epg.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    $epgChannel = EpgChannel::create([
+        'name' => 'BBC One HD',
+        'display_name' => 'BBC One HD',
+        'lang' => 'en',
+        'channel_id' => 'bbc-one-hd',
+        'epg_id' => $epg->id,
+        'user_id' => $user->id,
+    ]);
+
+    $channel = Channel::create([
+        'name' => 'BBC One HD',
+        'title' => 'BBC One HD',
+        'enabled' => true,
+        'channel' => 1,
+        'shift' => 0,
+        'url' => 'http://stream.example.test/live.ts',
+        'logo' => '',
+        'group' => 'Test',
+        'stream_id' => '1',
+        'lang' => 'en',
+        'country' => 'GB',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'is_vod' => false,
+        'epg_channel_id' => null,
+    ]);
+
+    $scanRun = $pluginManager->executeAction($plugin->fresh(), 'scan', [
+        'playlist_id' => $playlist->id,
+        'epg_id' => $epg->id,
+        'hours_ahead' => 12,
+        'confidence_threshold' => 0.6,
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'user_id' => $user->id,
+    ]);
+
+    expect($scanRun->status)->toBe('completed');
+    expect(data_get($scanRun->result, 'data.channels'))->toHaveCount(1);
+    expect(data_get($scanRun->result, 'data.channels.0.issue'))->toBe('unmapped');
+    expect(data_get($scanRun->result, 'data.channels.0.suggested_epg_channel_id'))->toBe($epgChannel->id);
+    expect(data_get($scanRun->result, 'data.channels.0.repairable'))->toBeTrue();
+
+    $applyRun = $pluginManager->executeAction($plugin->fresh(), 'apply', [
+        'playlist_id' => $playlist->id,
+        'epg_id' => $epg->id,
+        'hours_ahead' => 12,
+        'confidence_threshold' => 0.6,
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => false,
+        'user_id' => $user->id,
+    ]);
+
+    expect($applyRun->status)->toBe('completed');
+
+    $channel->refresh();
+
+    expect($channel->epg_channel_id)->toBe($epgChannel->id);
+    expect(data_get($applyRun->result, 'data.totals.repairs_applied'))->toBe(1);
+});
