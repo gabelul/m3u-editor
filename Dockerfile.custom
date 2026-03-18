@@ -42,23 +42,22 @@ COPY --chown=m3ue:m3ue database/migrations/2026_03_07_030000_add_title_normalize
 
 # ---------- Supervisor config ----------
 # Appends ml-matcher program block to the existing supervisord.conf
-# Uses a heredoc so we don't have to maintain a full copy of the upstream config
-RUN cat >> /etc/supervisor/conf.d/supervisord.conf << 'SUPERVISOR_EOF'
-
-;-----------------------------------------
-; ML Matcher Service (TF-IDF n-gram semantic EPG matching)
-; Provides /match and /match-batch endpoints on port 5599 (localhost only)
-;-----------------------------------------
-[program:ml-matcher]
-command=/bin/sh /opt/ml-matcher/start.sh
-user=%(ENV_SUPERVISOR_PHP_USER)s
-autostart=true
-autorestart=true
-startsecs=10
-startretries=3
-redirect_stderr=true
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-priority=8
-environment=ML_MATCHER_HOST="127.0.0.1",ML_MATCHER_PORT="5599",ML_MATCHER_LOG_LEVEL="INFO"
-SUPERVISOR_EOF
+# Using echo -e with \n instead of heredoc for Docker build compatibility
+RUN printf '\n\
+;-----------------------------------------\n\
+; ML Matcher Service (TF-IDF n-gram semantic EPG matching)\n\
+; Provides /match and /match-batch endpoints on port 5599 (localhost only)\n\
+;-----------------------------------------\n\
+[program:ml-matcher]\n\
+command=/bin/sh /opt/ml-matcher/start.sh\n\
+user=%%(ENV_SUPERVISOR_PHP_USER)s\n\
+autostart=true\n\
+autorestart=true\n\
+startsecs=10\n\
+startretries=3\n\
+redirect_stderr=true\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+priority=8\n\
+environment=ML_MATCHER_HOST="127.0.0.1",ML_MATCHER_PORT="5599",ML_MATCHER_LOG_LEVEL="INFO"\n' \
+    >> /etc/supervisor/conf.d/supervisord.conf
