@@ -2,8 +2,10 @@
 
 namespace App\Filament\Resources\ExtensionPlugins\RelationManagers;
 
+use App\Filament\Resources\ExtensionPlugins\ExtensionPluginResource;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
+use Filament\Tables\Actions\Action;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
@@ -24,6 +26,10 @@ class RunsRelationManager extends RelationManager
         return $table
             ->poll('3s')
             ->defaultSort('created_at', 'desc')
+            ->recordUrl(fn ($record): string => ExtensionPluginResource::getUrl('run', [
+                'record' => $this->getOwnerRecord(),
+                'run' => $record,
+            ]))
             ->emptyStateHeading('No run history yet')
             ->emptyStateDescription('Queue a plugin action from the page header to create the first run.')
             ->columns([
@@ -63,6 +69,15 @@ class RunsRelationManager extends RelationManager
                 TextColumn::make('finished_at')
                     ->since()
                     ->toggleable(),
+            ])
+            ->recordActions([
+                Action::make('open')
+                    ->label('Open')
+                    ->icon('heroicon-o-arrow-top-right-on-square')
+                    ->url(fn ($record): string => ExtensionPluginResource::getUrl('run', [
+                        'record' => $this->getOwnerRecord(),
+                        'run' => $record,
+                    ])),
             ]);
     }
 }

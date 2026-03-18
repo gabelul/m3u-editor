@@ -5,13 +5,16 @@ use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\ExtensionPlugin;
+use App\Models\ExtensionPluginRun;
 use App\Models\ExtensionPluginRunLog;
 use App\Models\Playlist;
 use App\Models\User;
+use App\Filament\Resources\ExtensionPlugins\Pages\ViewPluginRun;
 use App\Plugins\PluginManager;
 use App\Plugins\PluginSchemaMapper;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Livewire\Livewire;
 
 it('discovers the bundled epg repair plugin as a valid local plugin', function () {
     $plugins = app(PluginManager::class)->discover();
@@ -204,4 +207,42 @@ it('prefills plugin action fields from saved settings when declared', function (
     expect($components['epg_id']->getDefaultState())->toBe(77);
     expect($components['hours_ahead']->getDefaultState())->toBe(24);
     expect($components['confidence_threshold']->getDefaultState())->toBe(0.8);
+});
+
+it('loads a plugin run detail page inside the plugin resource', function () {
+    $plugin = app(PluginManager::class)->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::factory()->create([
+        'permissions' => ['use_tools'],
+    ]);
+
+    $this->actingAs($user);
+
+    $run = ExtensionPluginRun::query()->create([
+        'extension_plugin_id' => $plugin->id,
+        'user_id' => $user->id,
+        'status' => 'running',
+        'invocation_type' => 'action',
+        'action' => 'scan',
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'payload' => ['playlist_id' => 123],
+        'summary' => 'Queued for inspection.',
+        'started_at' => now(),
+    ]);
+
+    $run->logs()->create([
+        'level' => 'info',
+        'message' => 'Plugin run started.',
+        'context' => ['playlist_id' => 123],
+    ]);
+
+    Livewire::test(ViewPluginRun::class, [
+        'record' => $plugin->id,
+        'run' => $run->id,
+    ])
+        ->assertOk()
+        ->assertSee('Plugin run started.')
+        ->assertSee('Queued for inspection.');
 });

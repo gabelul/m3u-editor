@@ -4,6 +4,7 @@ namespace App\Filament\Resources\ExtensionPlugins;
 
 use App\Filament\Resources\ExtensionPlugins\Pages\EditExtensionPlugin;
 use App\Filament\Resources\ExtensionPlugins\Pages\ListExtensionPlugins;
+use App\Filament\Resources\ExtensionPlugins\Pages\ViewPluginRun;
 use App\Filament\Resources\ExtensionPlugins\RelationManagers\LogsRelationManager;
 use App\Filament\Resources\ExtensionPlugins\RelationManagers\RunsRelationManager;
 use App\Models\ExtensionPlugin;
@@ -188,6 +189,7 @@ class ExtensionPluginResource extends Resource
         return [
             'index' => ListExtensionPlugins::route('/'),
             'edit' => EditExtensionPlugin::route('/{record}/edit'),
+            'run' => ViewPluginRun::route('/{record}/runs/{run}'),
         ];
     }
 
@@ -223,6 +225,7 @@ class ExtensionPluginResource extends Resource
             $latestRun->started_at ? 'Started: '.e($latestRun->started_at->toDateTimeString()) : null,
             $latestRun->finished_at ? 'Finished: '.e($latestRun->finished_at->toDateTimeString()) : null,
             $latestRun->summary ? '<span class="text-sm">'.e($latestRun->summary).'</span>' : null,
+            '<a href="'.e(self::getUrl('run', ['record' => $record, 'run' => $latestRun])).'" class="inline-flex items-center rounded-md border border-primary-200 bg-primary-50 px-2.5 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 dark:border-primary-800 dark:bg-primary-950/40 dark:text-primary-300 dark:hover:bg-primary-900/60">Open run details</a>',
         ]);
     }
 

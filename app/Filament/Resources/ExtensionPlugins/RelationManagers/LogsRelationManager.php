@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\ExtensionPlugins\RelationManagers;
 
+use App\Filament\Resources\ExtensionPlugins\ExtensionPluginResource;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -42,6 +43,12 @@ class LogsRelationManager extends RelationManager
                     ->state(fn ($record) => $record->run?->action
                         ? str($record->run->action)->headline().' #'.$record->extension_plugin_run_id
                         : str($record->run?->hook ?? 'Hook')->headline().' #'.$record->extension_plugin_run_id)
+                    ->url(fn ($record): ?string => $record->run
+                        ? ExtensionPluginResource::getUrl('run', [
+                            'record' => $this->getOwnerRecord(),
+                            'run' => $record->run,
+                        ])
+                        : null)
                     ->wrap(),
                 TextColumn::make('message')
                     ->wrap()
