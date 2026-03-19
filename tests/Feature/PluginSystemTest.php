@@ -15,6 +15,7 @@ use App\Plugins\PluginSchemaMapper;
 use App\Jobs\ExecutePluginInvocation;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
 
@@ -119,7 +120,12 @@ it('scans and applies epg repairs through the plugin manager', function () {
     expect(data_get($scanRun->result, 'data.channels_preview.0.repairable'))->toBeTrue();
     expect(data_get($scanRun->result, 'data.channels_total_count'))->toBe(1);
     expect(data_get($scanRun->result, 'data.channels_truncated'))->toBeFalse();
+    expect(data_get($scanRun->result, 'data.issue_breakdown.unmapped'))->toBe(1);
+    expect(data_get($scanRun->result, 'data.decision_breakdown.repairable'))->toBe(1);
+    expect(data_get($scanRun->result, 'data.confidence_breakdown.exact'))->toBe(1);
     expect(data_get($scanRun->result, 'data.totals.epg_channels_available'))->toBe(1);
+    expect(Storage::disk('local')->exists(data_get($scanRun->result, 'data.report.path')))->toBeTrue();
+    expect(Storage::disk('local')->get(data_get($scanRun->result, 'data.report.path')))->toContain('BBC One HD');
     expect($scanRun->progress)->toBe(100);
     expect(data_get($scanRun->result, 'status'))->toBe('completed');
     expect($scanRun->last_heartbeat_at)->not->toBeNull();

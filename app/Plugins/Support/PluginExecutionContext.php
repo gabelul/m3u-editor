@@ -75,7 +75,7 @@ class PluginExecutionContext
         }
     }
 
-    public function state(string $key = null, mixed $default = null): mixed
+    public function state(?string $key = null, mixed $default = null): mixed
     {
         $state = $this->run->fresh()->run_state ?? [];
 
