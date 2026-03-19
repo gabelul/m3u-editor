@@ -315,6 +315,30 @@ startup_log_file="${log_dir}/startup.log"
 # Set log directory variable
 export LOG_DIR="${log_dir}"
 
+upsert_env_value() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local tmp
+
+    tmp=$(mktemp)
+
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated = 0 }
+        index($0, key "=") == 1 {
+            print key "=" value
+            updated = 1
+            next
+        }
+        { print }
+        END {
+            if (!updated) {
+                print key "=" value
+            }
+        }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 # Invalid log files, or files that will be created by the app
 swoole_log_file="${log_dir}/swoole_http.log"
 reverb_log_file="${log_dir}/reverb.log"
@@ -375,6 +399,14 @@ echo "" > "${nginx_log_file}"
 
 # Link environment file
 ln -sf "${env_file}" .env
+
+# Persist runtime-generated websocket configuration so Laravel web requests,
+# health checks, and docker exec artisan commands all see the same values.
+upsert_env_value "${env_file}" "REVERB_APP_ID" "${REVERB_APP_ID}"
+upsert_env_value "${env_file}" "REVERB_APP_SECRET" "${REVERB_APP_SECRET}"
+upsert_env_value "${env_file}" "REVERB_HOST" "${REVERB_HOST}"
+upsert_env_value "${env_file}" "REVERB_PORT" "${REVERB_PORT}"
+upsert_env_value "${env_file}" "REVERB_SCHEME" "${REVERB_SCHEME}"
 
 # Ensure required Laravel runtime directories exist even when the build context
 # excludes transient cache/session/view folders.
