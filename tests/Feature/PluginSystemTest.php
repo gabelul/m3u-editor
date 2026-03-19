@@ -116,7 +116,9 @@ it('scans and applies epg repairs through the plugin manager', function () {
     expect($scanRun->status)->toBe('completed');
     expect(data_get($scanRun->result, 'data.channels_preview'))->toHaveCount(1);
     expect(data_get($scanRun->result, 'data.channels_preview.0.issue'))->toBe('unmapped');
+    expect(data_get($scanRun->result, 'data.channels_preview.0.playlist_name'))->toBe('Plugin Test Playlist');
     expect(data_get($scanRun->result, 'data.channels_preview.0.suggested_epg_channel_id'))->toBe($epgChannel->id);
+    expect(data_get($scanRun->result, 'data.channels_preview.0.suggested_epg_source_name'))->toBe('Plugin Test EPG');
     expect(data_get($scanRun->result, 'data.channels_preview.0.repairable'))->toBeTrue();
     expect(data_get($scanRun->result, 'data.channels_total_count'))->toBe(1);
     expect(data_get($scanRun->result, 'data.channels_truncated'))->toBeFalse();

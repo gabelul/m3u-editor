@@ -19,6 +19,12 @@
         $decisionBreakdown = data_get($resultData, 'decision_breakdown', []);
         $confidenceBreakdown = data_get($resultData, 'confidence_breakdown', []);
         $report = data_get($resultData, 'report', []);
+        $previewChannels = data_get($resultData, 'channels_preview', []);
+        $playlistTarget = data_get($resultData, 'playlist');
+        $epgTarget = data_get($resultData, 'epg');
+        $totals = data_get($resultData, 'totals', []);
+        $confidenceThreshold = data_get($run->payload, 'confidence_threshold');
+        $hoursAhead = data_get($run->payload, 'hours_ahead');
     @endphp
 
     <div class="space-y-6">
@@ -143,6 +149,129 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <section class="grid gap-6 xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
+            <div class="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                <h2 class="text-sm font-semibold text-gray-950 dark:text-white">Target scope</h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">This run only inspects the selected playlist against one chosen EPG source at a time.</p>
+
+                <dl class="mt-5 grid gap-4 sm:grid-cols-2">
+                    <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Playlist</dt>
+                        <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                            {{ data_get($playlistTarget, 'name', 'Unknown playlist') }}
+                        </dd>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">ID {{ data_get($playlistTarget, 'id', 'n/a') }}</div>
+                    </div>
+                    <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">EPG source</dt>
+                        <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                            {{ data_get($epgTarget, 'name', 'Unknown EPG') }}
+                        </dd>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">ID {{ data_get($epgTarget, 'id', 'n/a') }}</div>
+                    </div>
+                    <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Window</dt>
+                        <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                            {{ filled($hoursAhead) ? $hoursAhead.' hours ahead' : 'Not specified' }}
+                        </dd>
+                    </div>
+                    <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Confidence threshold</dt>
+                        <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                            {{ filled($confidenceThreshold) ? $confidenceThreshold : 'Not specified' }}
+                        </dd>
+                    </div>
+                </dl>
+
+                <div class="mt-5 rounded-2xl border border-dashed border-gray-200 p-4 text-sm text-gray-600 dark:border-gray-800 dark:text-gray-300">
+                    <div class="font-medium text-gray-950 dark:text-white">How to read this</div>
+                    <p class="mt-2">If you have multiple EPG sources configured, this run is only judging channels against the selected source shown above. Run the plugin again with another EPG source if you want to compare results source by source.</p>
+                </div>
+            </div>
+
+            <div class="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 class="text-sm font-semibold text-gray-950 dark:text-white">Channel evidence</h2>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">A preview of exactly what the plugin found and what it wanted to do.</p>
+                    </div>
+                    <div class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                        Showing {{ count($previewChannels) }} of {{ number_format((int) data_get($resultData, 'channels_total_count', count($previewChannels))) }}
+                    </div>
+                </div>
+
+                @if($previewChannels !== [])
+                    <div class="mt-5 overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-800">
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-800">
+                                <thead class="bg-gray-50 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:bg-gray-950/60 dark:text-gray-400">
+                                    <tr>
+                                        <th class="px-4 py-3">Channel</th>
+                                        <th class="px-4 py-3">Issue</th>
+                                        <th class="px-4 py-3">Current mapping</th>
+                                        <th class="px-4 py-3">Suggested mapping</th>
+                                        <th class="px-4 py-3">Decision</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                                    @foreach($previewChannels as $item)
+                                        <tr class="align-top">
+                                            <td class="px-4 py-4">
+                                                <div class="font-medium text-gray-950 dark:text-white">{{ data_get($item, 'channel_name', 'Unknown channel') }}</div>
+                                                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Channel ID {{ data_get($item, 'channel_id', 'n/a') }}</div>
+                                                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Playlist {{ data_get($item, 'playlist_name', data_get($playlistTarget, 'name', 'n/a')) }}</div>
+                                            </td>
+                                            <td class="px-4 py-4">
+                                                <span class="inline-flex rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">{{ \Illuminate\Support\Str::headline((string) data_get($item, 'issue', 'unknown')) }}</span>
+                                            </td>
+                                            <td class="px-4 py-4">
+                                                <div class="font-medium text-gray-950 dark:text-white">{{ data_get($item, 'current_epg_channel_name') ?: 'No current mapping' }}</div>
+                                                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ data_get($item, 'current_epg_source_name') ?: 'No current EPG source' }}</div>
+                                                @if(filled(data_get($item, 'current_epg_channel_id')))
+                                                    <div class="mt-1 text-xs text-gray-400 dark:text-gray-500">EPG Channel ID {{ data_get($item, 'current_epg_channel_id') }}</div>
+                                                @endif
+                                            </td>
+                                            <td class="px-4 py-4">
+                                                <div class="font-medium text-gray-950 dark:text-white">{{ data_get($item, 'suggested_epg_channel_name') ?: 'No suggestion' }}</div>
+                                                <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ data_get($item, 'suggested_epg_source_name', data_get($epgTarget, 'name', 'Unknown EPG source')) }}</div>
+                                                <div class="mt-2 flex flex-wrap gap-2 text-xs">
+                                                    <span class="inline-flex rounded-full bg-success-50 px-2.5 py-1 font-medium text-success-700 dark:bg-success-950/40 dark:text-success-300">{{ \Illuminate\Support\Str::headline((string) data_get($item, 'confidence_band', 'none')) }}</span>
+                                                    @if(filled(data_get($item, 'confidence')))
+                                                        <span class="inline-flex rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">{{ data_get($item, 'confidence') }}</span>
+                                                    @endif
+                                                </div>
+                                                <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ \Illuminate\Support\Str::headline((string) data_get($item, 'match_reason', 'no_match_reason')) }}</div>
+                                            </td>
+                                            <td class="px-4 py-4">
+                                                <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {{ data_get($item, 'decision') === 'repairable' ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200' }}">
+                                                    {{ \Illuminate\Support\Str::headline((string) data_get($item, 'decision', 'unknown')) }}
+                                                </span>
+                                                <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                                    {{ data_get($item, 'repairable') ? 'The plugin considers this safe enough to apply.' : 'Needs review before any apply run.' }}
+                                                </div>
+                                                @if(array_key_exists('applied', $item))
+                                                    <div class="mt-2 text-xs font-medium {{ data_get($item, 'applied') ? 'text-success-600 dark:text-success-400' : 'text-gray-500 dark:text-gray-400' }}">
+                                                        {{ data_get($item, 'applied') ? 'Applied in this run' : 'Preview only' }}
+                                                    </div>
+                                                @endif
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    @if(data_get($resultData, 'channels_truncated'))
+                        <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">The preview is truncated. Use the CSV report to inspect the full set of affected channels.</p>
+                    @endif
+                @else
+                    <div class="mt-5 rounded-2xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500 dark:border-gray-800 dark:text-gray-400">
+                        No per-channel evidence has been recorded for this run yet.
+                    </div>
+                @endif
             </div>
         </section>
 

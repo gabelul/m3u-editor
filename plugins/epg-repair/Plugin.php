@@ -272,7 +272,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         $cancelled = false;
 
         $query = $playlist->enabled_live_channels()
-            ->with(['epgChannel'])
+            ->with(['epgChannel.epg'])
             ->orderBy('channels.id');
 
         if (($checkpoint['last_channel_id'] ?? null) !== null) {
@@ -283,6 +283,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             $applyRepairs,
             $context,
             $epg,
+            $playlist,
             $end,
             &$cancelled,
             &$checkpoint,
@@ -351,10 +352,17 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 $item = [
                     'channel_id' => $channel->id,
                     'channel_name' => $channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name,
+                    'playlist_id' => $playlist->id,
+                    'playlist_name' => $playlist->name,
                     'issue' => $issue,
                     'current_epg_channel_id' => $channel->epg_channel_id,
+                    'current_epg_channel_name' => $channel->epgChannel?->display_name ?? $channel->epgChannel?->name ?? $channel->epgChannel?->channel_id,
+                    'current_epg_source_id' => $channel->epgChannel?->epg_id,
+                    'current_epg_source_name' => $channel->epgChannel?->epg?->name,
                     'suggested_epg_channel_id' => $suggested?->id,
                     'suggested_epg_channel_name' => $suggested?->display_name ?? $suggested?->name ?? $suggested?->channel_id,
+                    'suggested_epg_source_id' => $suggested?->epg_id,
+                    'suggested_epg_source_name' => $suggested?->epg?->name ?? $epg->name,
                     'confidence' => $confidence,
                     'confidence_band' => $matchInsight['confidence_band'],
                     'match_reason' => $matchInsight['match_reason'],
@@ -602,11 +610,15 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         $disk->put($reportPath, $this->csvRow([
             'channel_id',
             'channel_name',
+            'playlist_name',
             'issue',
             'decision',
             'current_epg_channel_id',
+            'current_epg_channel_name',
+            'current_epg_source_name',
             'suggested_epg_channel_id',
             'suggested_epg_channel_name',
+            'suggested_epg_source_name',
             'confidence',
             'confidence_band',
             'match_reason',
@@ -630,11 +642,15 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         Storage::disk('local')->append($checkpoint['report_path'], $this->csvRow([
             $item['channel_id'],
             $item['channel_name'],
+            $item['playlist_name'],
             $item['issue'],
             $item['decision'],
             $item['current_epg_channel_id'],
+            $item['current_epg_channel_name'],
+            $item['current_epg_source_name'],
             $item['suggested_epg_channel_id'],
             $item['suggested_epg_channel_name'],
+            $item['suggested_epg_source_name'],
             $item['confidence'],
             $item['confidence_band'],
             $item['match_reason'],
