@@ -18,6 +18,29 @@ Required files:
 - `plugin.json`
 - entrypoint file referenced by `plugin.json`, usually `Plugin.php`
 
+To scaffold a new local plugin:
+
+```bash
+php artisan make:plugin "Acme XML Tools"
+```
+
+Useful options:
+
+```bash
+php artisan make:plugin "Acme XML Tools" \
+  --capability=channel_processor \
+  --capability=scheduled \
+  --hook=playlist.synced \
+  --lifecycle
+```
+
+The scaffold creates:
+
+- `plugins/<plugin-id>/plugin.json`
+- `plugins/<plugin-id>/Plugin.php`
+
+The generated plugin is designed to validate immediately and includes a simple `health_check` action so operators can exercise it right away from `Tools -> Extensions`.
+
 ## Manifest
 
 Example:
@@ -186,6 +209,7 @@ Supported schema field types:
 - `php artisan plugins:discover`
 - `php artisan plugins:validate`
 - `php artisan plugins:validate epg-repair`
+- `php artisan make:plugin "Acme XML Tools"`
 - `php artisan plugins:doctor`
 - `php artisan plugins:uninstall epg-repair --cleanup=preserve`
 - `php artisan plugins:reinstall epg-repair`
@@ -215,6 +239,14 @@ Operational rule:
 5. Enable it.
 6. Run manual actions or let hooks/schedules invoke it.
 7. If you remove the plugin later, choose whether uninstall should preserve or purge the declared plugin-owned data.
+
+## Scaffold Workflow
+
+1. Run `php artisan make:plugin "Your Plugin Name"`.
+2. Edit the generated `plugin.json` capabilities, hooks, settings, and ownership declarations.
+3. Replace the generated `health_check` behavior with the real plugin logic in `Plugin.php`.
+4. Run discovery and validation.
+5. Open `Tools -> Extensions` and test the scaffold from the UI.
 
 ## Execution Model
 

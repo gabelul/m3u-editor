@@ -77,6 +77,7 @@ Prefer:
 After plugin-kernel or plugin changes, run the host checks in this order:
 
 ```bash
+php artisan make:plugin "Acme XML Tools"
 php artisan plugins:discover
 php artisan plugins:validate
 php artisan plugins:doctor
@@ -126,6 +127,7 @@ When improving the reference plugin, keep the plugin generic enough that future 
 
 - Plugin tables should use the required plugin prefix pattern from `PLUGIN_DEV.md`.
 - Plugin file output should stay under `plugin-data/<plugin-id>/...` or `plugin-reports/<plugin-id>/...`.
+- New local plugin scaffolds should start with `php artisan make:plugin "Plugin Name"` and then be refined instead of hand-assembling files from scratch.
 - If you add a new capability or lifecycle state, update both docs and tests in the same change.
 - Prefer compact run payloads; move large reviewable datasets into plugin-owned tables.
 

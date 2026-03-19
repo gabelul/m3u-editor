@@ -23,7 +23,11 @@ use Livewire\Livewire;
 function discoverPluginForTests(bool $enabled = false): ExtensionPlugin
 {
     $pluginManager = app(PluginManager::class);
-    $plugin = $pluginManager->discover()[0];
+    $plugin = collect($pluginManager->discover())
+        ->firstWhere('plugin_id', 'epg-repair');
+
+    expect($plugin)->not->toBeNull();
+
     $plugin = $pluginManager->reinstall($plugin->fresh());
 
     if ($enabled) {
@@ -36,7 +40,7 @@ function discoverPluginForTests(bool $enabled = false): ExtensionPlugin
 it('discovers the bundled epg repair plugin as a valid local plugin', function () {
     $plugins = app(PluginManager::class)->discover();
 
-    expect($plugins)->toHaveCount(1);
+    expect(collect($plugins)->pluck('plugin_id'))->toContain('epg-repair');
 
     $plugin = ExtensionPlugin::query()->where('plugin_id', 'epg-repair')->first();
 
@@ -49,7 +53,10 @@ it('discovers the bundled epg repair plugin as a valid local plugin', function (
 });
 
 it('validates a discovered plugin from the registry', function () {
-    $plugin = app(PluginManager::class)->discover()[0];
+    $plugin = collect(app(PluginManager::class)->discover())
+        ->firstWhere('plugin_id', 'epg-repair');
+
+    expect($plugin)->not->toBeNull();
 
     $validated = app(PluginManager::class)->validate($plugin);
 
@@ -645,7 +652,8 @@ it('can rediscover a forgotten registry row without treating it as uninstall cle
 
     expect(ExtensionPlugin::query()->where('plugin_id', $pluginId)->exists())->toBeFalse();
 
-    $rediscovered = $pluginManager->discover()[0];
+    $rediscovered = collect($pluginManager->discover())
+        ->firstWhere('plugin_id', $pluginId);
 
     expect($rediscovered->plugin_id)->toBe($pluginId);
     expect($rediscovered->isInstalled())->toBeTrue();
@@ -686,7 +694,8 @@ it('supports plugin lifecycle commands from the host', function () {
 it('reports plugin registry health through the doctor command', function () {
     Storage::fake('local');
 
-    $plugin = app(PluginManager::class)->discover()[0];
+    $plugin = collect(app(PluginManager::class)->discover())
+        ->firstWhere('plugin_id', 'epg-repair');
     $plugin = app(PluginManager::class)->reinstall($plugin->fresh());
 
     $this->artisan('plugins:doctor')
