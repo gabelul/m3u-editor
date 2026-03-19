@@ -962,7 +962,7 @@ class XtreamApiController extends Controller
                 }
 
                 // Metadata fetched successfully
-                $seriesItem->fresh('seasons.episodes', 'category'); // Refresh to get the latest metadata
+                $seriesItem = $seriesItem->fresh(['seasons.episodes', 'category']) ?? $seriesItem;
             }
 
             $cover = $seriesItem->cover ? (filter_var($seriesItem->cover, FILTER_VALIDATE_URL) ? $seriesItem->cover : $baseUrl."/$seriesItem->cover") : LogoCacheService::getPlaceholderUrl('poster');
@@ -1408,7 +1408,6 @@ class XtreamApiController extends Controller
                 if ($results === false) {
                     return response()->json(['error' => 'Failed to fetch VOD metadata'], 500);
                 }
-                $channel->fresh(); // Refresh to get the latest metadata
             }
 
             // Build info section - use channel's info field if available, otherwise build from channel data
