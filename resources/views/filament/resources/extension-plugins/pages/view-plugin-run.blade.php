@@ -14,6 +14,11 @@
         $result = json_encode($run->result ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         $latestMessage = $this->logs->last()?->message;
         $progress = (int) ($run->progress ?? 0);
+        $resultData = data_get($run->result, 'data', []);
+        $issueBreakdown = data_get($resultData, 'issue_breakdown', []);
+        $decisionBreakdown = data_get($resultData, 'decision_breakdown', []);
+        $confidenceBreakdown = data_get($resultData, 'confidence_breakdown', []);
+        $report = data_get($resultData, 'report', []);
     @endphp
 
     <div class="space-y-6">
@@ -94,12 +99,48 @@
                     </div>
 
                     <div class="rounded-2xl border border-gray-200 bg-white/90 p-5 shadow-xs dark:border-gray-800 dark:bg-gray-900/90">
-                        <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">What to inspect</div>
-                        <ul class="mt-4 space-y-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                            <li>Watch the activity stream for progress and warnings.</li>
-                            <li>Use the payload snapshot to confirm which playlist and EPG were targeted.</li>
-                            <li>Use the result snapshot to verify what the plugin actually changed.</li>
-                        </ul>
+                        <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Report snapshot</div>
+                        <div class="mt-4 space-y-4 text-sm text-gray-600 dark:text-gray-300">
+                            <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500">Issue mix</div>
+                                    <div class="mt-2 flex flex-wrap gap-2">
+                                        @forelse($issueBreakdown as $issue => $count)
+                                            <span class="inline-flex rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">{{ \Illuminate\Support\Str::headline($issue) }} · {{ $count }}</span>
+                                        @empty
+                                            <span class="text-xs text-gray-400 dark:text-gray-500">No issue summary yet.</span>
+                                        @endforelse
+                                    </div>
+                                </div>
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500">Decisions</div>
+                                    <div class="mt-2 flex flex-wrap gap-2">
+                                        @forelse($decisionBreakdown as $decision => $count)
+                                            <span class="inline-flex rounded-full bg-primary-50 px-2.5 py-1 text-xs font-medium text-primary-700 dark:bg-primary-950/40 dark:text-primary-300">{{ \Illuminate\Support\Str::headline($decision) }} · {{ $count }}</span>
+                                        @empty
+                                            <span class="text-xs text-gray-400 dark:text-gray-500">No decisions recorded yet.</span>
+                                        @endforelse
+                                    </div>
+                                </div>
+                                <div>
+                                    <div class="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500">Confidence</div>
+                                    <div class="mt-2 flex flex-wrap gap-2">
+                                        @forelse($confidenceBreakdown as $band => $count)
+                                            <span class="inline-flex rounded-full bg-success-50 px-2.5 py-1 text-xs font-medium text-success-700 dark:bg-success-950/40 dark:text-success-300">{{ \Illuminate\Support\Str::headline($band) }} · {{ $count }}</span>
+                                        @empty
+                                            <span class="text-xs text-gray-400 dark:text-gray-500">No confidence summary yet.</span>
+                                        @endforelse
+                                    </div>
+                                </div>
+                            </div>
+                            @if(filled(data_get($report, 'filename')))
+                                <div class="rounded-2xl bg-gray-50 p-4 text-xs text-gray-500 dark:bg-gray-950/60 dark:text-gray-300">
+                                    <div class="font-semibold text-gray-700 dark:text-gray-100">Artifact</div>
+                                    <div class="mt-1">{{ data_get($report, 'filename') }}</div>
+                                    <div class="mt-1">{{ number_format((int) data_get($report, 'rows_written', 0)) }} row(s) written to the CSV report.</div>
+                                </div>
+                            @endif
+                        </div>
                     </div>
                 </div>
             </div>

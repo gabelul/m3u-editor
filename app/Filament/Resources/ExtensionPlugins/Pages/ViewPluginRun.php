@@ -12,6 +12,7 @@ use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class ViewPluginRun extends Page
@@ -58,6 +59,20 @@ class ViewPluginRun extends Page
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('download_report')
+                ->label('Download Report')
+                ->icon('heroicon-o-arrow-down-tray')
+                ->color('gray')
+                ->visible(function (): bool {
+                    $reportPath = data_get($this->runRecord->result, 'data.report.path')
+                        ?? data_get($this->runRecord->run_state, 'epg_repair.report_path');
+
+                    return filled($reportPath) && Storage::disk('local')->exists($reportPath);
+                })
+                ->url(fn (): string => route('extension-plugins.runs.report', [
+                    'plugin' => $this->getRecord(),
+                    'run' => $this->runRecord,
+                ])),
             Action::make('stop_run')
                 ->label('Stop Run')
                 ->icon('heroicon-o-stop-circle')
