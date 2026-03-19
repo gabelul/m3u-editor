@@ -102,6 +102,17 @@
           "label": "Confidence Threshold",
           "type": "number",
           "default": 0.65
+        },
+        {
+          "id": "source_scope",
+          "label": "Source Comparison",
+          "type": "select",
+          "default": "selected_only",
+          "options": {
+            "selected_only": "Selected EPG only",
+            "all_owned": "Compare all owned EPGs"
+          },
+          "helper_text": "Use the selected EPG only for a focused repair pass, or compare the channel against all of your EPG sources to find the best candidate."
         }
       ]
     },
@@ -144,6 +155,33 @@
           "label": "Confidence Threshold",
           "type": "number",
           "default": 0.65
+        },
+        {
+          "id": "apply_scope",
+          "label": "Apply Scope",
+          "type": "select",
+          "default": "safe_only",
+          "options": {
+            "safe_only": "Safe issues only",
+            "unmapped_only": "Unmapped only",
+            "broken_only": "Broken mappings only",
+            "all_repairable": "All repairable issues"
+          },
+          "helper_text": "Safe issues skip source-switch repairs unless you explicitly allow them."
+        },
+        {
+          "id": "allow_source_switch",
+          "label": "Allow Source Switching",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "If disabled, channels currently mapped to another EPG source will not be reassigned during apply."
+        },
+        {
+          "id": "max_repairs",
+          "label": "Maximum Repairs",
+          "type": "number",
+          "default": 250,
+          "helper_text": "Caps how many repairs can be applied in a single run. Use 0 for no limit."
         }
       ]
     }

@@ -207,6 +207,200 @@ it('explains when a scan has no enabled live channels to inspect', function () {
     expect($scanRun->logs()->pluck('message')->join(' '))->toContain('no enabled live channels');
 });
 
+it('can compare a channel against all owned epg sources during scan', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::create([
+        'name' => 'Compare Tester',
+        'email' => 'compare-'.Str::random(10).'@example.com',
+        'password' => Hash::make('password'),
+        'email_verified_at' => now(),
+    ]);
+
+    $playlist = Playlist::create([
+        'name' => 'Compare Playlist',
+        'uuid' => (string) Str::uuid(),
+        'url' => 'http://example.test/compare.m3u',
+        'status' => Status::Completed,
+        'prefix' => 'compare',
+        'channels' => 1,
+        'synced' => now(),
+        'id_channel_by' => 'stream_id',
+        'user_id' => $user->id,
+    ]);
+
+    $selectedEpg = Epg::create([
+        'name' => 'Regional EPG',
+        'url' => 'http://example.test/regional.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    $betterEpg = Epg::create([
+        'name' => 'Primary EPG',
+        'url' => 'http://example.test/primary.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    EpgChannel::create([
+        'name' => 'BBC One London',
+        'display_name' => 'BBC One London',
+        'lang' => 'en',
+        'channel_id' => 'bbc-one-london',
+        'epg_id' => $selectedEpg->id,
+        'user_id' => $user->id,
+    ]);
+
+    $betterChannel = EpgChannel::create([
+        'name' => 'BBC One HD',
+        'display_name' => 'BBC One HD',
+        'lang' => 'en',
+        'channel_id' => 'bbc-one-hd',
+        'epg_id' => $betterEpg->id,
+        'user_id' => $user->id,
+    ]);
+
+    Channel::create([
+        'name' => 'BBC One HD',
+        'title' => 'BBC One HD',
+        'enabled' => true,
+        'channel' => 1,
+        'shift' => 0,
+        'url' => 'http://stream.example.test/compare.ts',
+        'logo' => '',
+        'group' => 'Test',
+        'stream_id' => 'compare-1',
+        'lang' => 'en',
+        'country' => 'GB',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'is_vod' => false,
+        'epg_channel_id' => null,
+    ]);
+
+    $scanRun = $pluginManager->executeAction($plugin->fresh(), 'scan', [
+        'playlist_id' => $playlist->id,
+        'epg_id' => $selectedEpg->id,
+        'hours_ahead' => 12,
+        'confidence_threshold' => 0.6,
+        'source_scope' => 'all_owned',
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'user_id' => $user->id,
+    ]);
+
+    expect($scanRun->status)->toBe('completed');
+    expect(data_get($scanRun->result, 'data.source_scope'))->toBe('all_owned');
+    expect(data_get($scanRun->result, 'data.totals.compared_epg_sources'))->toBe(2);
+    expect(data_get($scanRun->result, 'data.channels_preview.0.decision'))->toBe('better_source_available');
+    expect(data_get($scanRun->result, 'data.channels_preview.0.suggested_epg_channel_id'))->toBe($betterChannel->id);
+    expect(data_get($scanRun->result, 'data.channels_preview.0.suggested_epg_source_name'))->toBe('Primary EPG');
+    expect(data_get($scanRun->result, 'data.channels_preview.0.source_candidates_count'))->toBeGreaterThanOrEqual(1);
+});
+
+it('blocks source switching during apply unless explicitly allowed', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::create([
+        'name' => 'Apply Guard Tester',
+        'email' => 'apply-guard-'.Str::random(10).'@example.com',
+        'password' => Hash::make('password'),
+        'email_verified_at' => now(),
+    ]);
+
+    $playlist = Playlist::create([
+        'name' => 'Apply Guard Playlist',
+        'uuid' => (string) Str::uuid(),
+        'url' => 'http://example.test/apply-guard.m3u',
+        'status' => Status::Completed,
+        'prefix' => 'apply-guard',
+        'channels' => 1,
+        'synced' => now(),
+        'id_channel_by' => 'stream_id',
+        'user_id' => $user->id,
+    ]);
+
+    $currentEpg = Epg::create([
+        'name' => 'Current EPG',
+        'url' => 'http://example.test/current.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    $targetEpg = Epg::create([
+        'name' => 'Target EPG',
+        'url' => 'http://example.test/target.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    $currentMapping = EpgChannel::create([
+        'name' => 'Sky Sports Main Event',
+        'display_name' => 'Sky Sports Main Event',
+        'lang' => 'en',
+        'channel_id' => 'sky-sports-main-event-current',
+        'epg_id' => $currentEpg->id,
+        'user_id' => $user->id,
+    ]);
+
+    EpgChannel::create([
+        'name' => 'Sky Sports Main Event',
+        'display_name' => 'Sky Sports Main Event',
+        'lang' => 'en',
+        'channel_id' => 'sky-sports-main-event-target',
+        'epg_id' => $targetEpg->id,
+        'user_id' => $user->id,
+    ]);
+
+    $channel = Channel::create([
+        'name' => 'Sky Sports Main Event',
+        'title' => 'Sky Sports Main Event',
+        'enabled' => true,
+        'channel' => 1,
+        'shift' => 0,
+        'url' => 'http://stream.example.test/apply-guard.ts',
+        'logo' => '',
+        'group' => 'Sports',
+        'stream_id' => 'apply-guard-1',
+        'lang' => 'en',
+        'country' => 'GB',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'is_vod' => false,
+        'epg_channel_id' => $currentMapping->id,
+    ]);
+
+    $applyRun = $pluginManager->executeAction($plugin->fresh(), 'apply', [
+        'playlist_id' => $playlist->id,
+        'epg_id' => $targetEpg->id,
+        'hours_ahead' => 12,
+        'confidence_threshold' => 0.6,
+        'apply_scope' => 'all_repairable',
+        'allow_source_switch' => false,
+        'max_repairs' => 50,
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => false,
+        'user_id' => $user->id,
+    ]);
+
+    $channel->refresh();
+
+    expect($applyRun->status)->toBe('completed');
+    expect($channel->epg_channel_id)->toBe($currentMapping->id);
+    expect(data_get($applyRun->result, 'data.totals.repairs_applied'))->toBe(0);
+    expect(data_get($applyRun->result, 'data.apply_outcome_breakdown.source_switch_blocked'))->toBe(1);
+    expect(data_get($applyRun->result, 'data.channels_preview.0.apply_outcome'))->toBe('source_switch_blocked');
+});
+
 it('prefills plugin action fields from saved settings when declared', function () {
     $plugin = app(PluginManager::class)->discover()[0];
 

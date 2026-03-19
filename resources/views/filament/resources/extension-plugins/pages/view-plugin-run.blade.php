@@ -25,6 +25,11 @@
         $totals = data_get($resultData, 'totals', []);
         $confidenceThreshold = data_get($run->payload, 'confidence_threshold');
         $hoursAhead = data_get($run->payload, 'hours_ahead');
+        $sourceScope = data_get($resultData, 'source_scope', data_get($run->payload, 'source_scope', 'selected_only'));
+        $applyOutcomeBreakdown = data_get($resultData, 'apply_outcome_breakdown', []);
+        $applyScope = data_get($run->payload, 'apply_scope');
+        $allowSourceSwitch = data_get($run->payload, 'allow_source_switch');
+        $maxRepairs = data_get($run->payload, 'max_repairs');
     @endphp
 
     <div class="space-y-6">
@@ -173,6 +178,13 @@
                         <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">ID {{ data_get($epgTarget, 'id', 'n/a') }}</div>
                     </div>
                     <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                        <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Source comparison</dt>
+                        <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                            {{ \Illuminate\Support\Str::headline((string) str_replace('_', ' ', $sourceScope)) }}
+                        </dd>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ number_format((int) data_get($totals, 'compared_epg_sources', 1)) }} EPG source(s) compared</div>
+                    </div>
+                    <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
                         <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Window</dt>
                         <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
                             {{ filled($hoursAhead) ? $hoursAhead.' hours ahead' : 'Not specified' }}
@@ -186,9 +198,38 @@
                     </div>
                 </dl>
 
+                @if(filled($applyScope) || filled($maxRepairs) || ! is_null($allowSourceSwitch))
+                    <dl class="mt-4 grid gap-4 sm:grid-cols-3">
+                        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                            <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Apply scope</dt>
+                            <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                                {{ filled($applyScope) ? \Illuminate\Support\Str::headline((string) str_replace('_', ' ', $applyScope)) : 'Not specified' }}
+                            </dd>
+                        </div>
+                        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                            <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Source switching</dt>
+                            <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                                {{ is_null($allowSourceSwitch) ? 'Not specified' : ($allowSourceSwitch ? 'Allowed' : 'Blocked') }}
+                            </dd>
+                        </div>
+                        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-gray-950/60">
+                            <dt class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Repair cap</dt>
+                            <dd class="mt-2 text-sm font-medium text-gray-950 dark:text-white">
+                                {{ filled($maxRepairs) ? ((int) $maxRepairs === 0 ? 'Unlimited' : number_format((int) $maxRepairs)) : 'Not specified' }}
+                            </dd>
+                        </div>
+                    </dl>
+                @endif
+
                 <div class="mt-5 rounded-2xl border border-dashed border-gray-200 p-4 text-sm text-gray-600 dark:border-gray-800 dark:text-gray-300">
                     <div class="font-medium text-gray-950 dark:text-white">How to read this</div>
-                    <p class="mt-2">If you have multiple EPG sources configured, this run is only judging channels against the selected source shown above. Run the plugin again with another EPG source if you want to compare results source by source.</p>
+                    <p class="mt-2">
+                        @if($sourceScope === 'all_owned')
+                            This run compares each affected channel against all completed EPG sources you own, then shows the best candidate and the strongest alternatives.
+                        @else
+                            This run only judges channels against the selected EPG source shown above.
+                        @endif
+                    </p>
                 </div>
             </div>
 
@@ -244,6 +285,17 @@
                                                     @endif
                                                 </div>
                                                 <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ \Illuminate\Support\Str::headline((string) data_get($item, 'match_reason', 'no_match_reason')) }}</div>
+                                                @if(count(data_get($item, 'source_candidates', [])) > 1)
+                                                    <div class="mt-3 space-y-1 rounded-xl bg-gray-50 p-3 text-xs text-gray-600 dark:bg-gray-950/60 dark:text-gray-300">
+                                                        <div class="font-semibold text-gray-700 dark:text-gray-100">Alternative sources</div>
+                                                        @foreach(data_get($item, 'source_candidates', []) as $candidate)
+                                                            <div>
+                                                                {{ data_get($candidate, 'epg_name') }} → {{ data_get($candidate, 'epg_channel_name') }}
+                                                                <span class="text-gray-400 dark:text-gray-500">({{ data_get($candidate, 'confidence_band') }})</span>
+                                                            </div>
+                                                        @endforeach
+                                                    </div>
+                                                @endif
                                             </td>
                                             <td class="px-4 py-4">
                                                 <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {{ data_get($item, 'decision') === 'repairable' ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200' }}">
@@ -252,6 +304,11 @@
                                                 <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
                                                     {{ data_get($item, 'repairable') ? 'The plugin considers this safe enough to apply.' : 'Needs review before any apply run.' }}
                                                 </div>
+                                                @if(filled(data_get($item, 'apply_outcome')))
+                                                    <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                                        Apply outcome: {{ \Illuminate\Support\Str::headline((string) data_get($item, 'apply_outcome')) }}
+                                                    </div>
+                                                @endif
                                                 @if(array_key_exists('applied', $item))
                                                     <div class="mt-2 text-xs font-medium {{ data_get($item, 'applied') ? 'text-success-600 dark:text-success-400' : 'text-gray-500 dark:text-gray-400' }}">
                                                         {{ data_get($item, 'applied') ? 'Applied in this run' : 'Preview only' }}
@@ -266,6 +323,13 @@
                     </div>
                     @if(data_get($resultData, 'channels_truncated'))
                         <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">The preview is truncated. Use the CSV report to inspect the full set of affected channels.</p>
+                    @endif
+                    @if($applyOutcomeBreakdown !== [])
+                        <div class="mt-4 flex flex-wrap gap-2">
+                            @foreach($applyOutcomeBreakdown as $outcome => $count)
+                                <span class="inline-flex rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">{{ \Illuminate\Support\Str::headline($outcome) }} · {{ $count }}</span>
+                            @endforeach
+                        </div>
                     @endif
                 @else
                     <div class="mt-5 rounded-2xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500 dark:border-gray-800 dark:text-gray-400">

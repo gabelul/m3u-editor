@@ -2,6 +2,7 @@
 
 namespace AppLocalPlugins\EpgRepair;
 
+use App\Enums\Status;
 use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
@@ -30,6 +31,8 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
     private const MAX_DETAILED_APPLY_LOGS = 25;
 
     private const MAX_RESULT_CHANNELS = 50;
+
+    private const MAX_SOURCE_CANDIDATES = 3;
 
     public function __construct(
         private readonly SimilaritySearchService $similaritySearch,
@@ -116,6 +119,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
         $hoursAhead = max(1, (int) ($payload['hours_ahead'] ?? $context->settings['hours_ahead'] ?? 12));
         $threshold = min(1, max(0.1, (float) ($payload['confidence_threshold'] ?? $context->settings['confidence_threshold'] ?? 0.65)));
+        $sourceScope = $payload['source_scope'] ?? 'selected_only';
 
         $context->info('Starting EPG Repair scan.', [
             'playlist_id' => $playlist->id,
@@ -124,6 +128,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'epg_name' => $epg->name,
             'hours_ahead' => $hoursAhead,
             'confidence_threshold' => $threshold,
+            'source_scope' => $sourceScope,
             'dry_run' => $context->dryRun || $implicitDryRun,
         ]);
 
@@ -134,6 +139,8 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             threshold: $threshold,
             context: $context,
             applyRepairs: false,
+            sourceScope: $sourceScope,
+            applyOptions: [],
         );
 
         if ($issues['totals']['channels_scanned'] === 0) {
@@ -194,6 +201,11 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
         $hoursAhead = max(1, (int) ($payload['hours_ahead'] ?? $context->settings['hours_ahead'] ?? 12));
         $threshold = min(1, max(0.1, (float) ($payload['confidence_threshold'] ?? $context->settings['confidence_threshold'] ?? 0.65)));
+        $applyOptions = [
+            'apply_scope' => $payload['apply_scope'] ?? 'safe_only',
+            'allow_source_switch' => (bool) ($payload['allow_source_switch'] ?? false),
+            'max_repairs' => max(0, (int) ($payload['max_repairs'] ?? 250)),
+        ];
 
         $context->info('Starting EPG Repair apply run.', [
             'playlist_id' => $playlist->id,
@@ -202,6 +214,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'epg_name' => $epg->name,
             'hours_ahead' => $hoursAhead,
             'confidence_threshold' => $threshold,
+            ...$applyOptions,
         ]);
 
         [$report, $cancelled] = $this->processRepairStream(
@@ -211,6 +224,8 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             threshold: $threshold,
             context: $context,
             applyRepairs: true,
+            sourceScope: 'selected_only',
+            applyOptions: $applyOptions,
         );
 
         $applied = $report['totals']['repairs_applied'] ?? 0;
@@ -248,11 +263,14 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         float $threshold,
         PluginExecutionContext $context,
         bool $applyRepairs,
+        string $sourceScope,
+        array $applyOptions,
     ): array
     {
         $mode = $applyRepairs ? 'apply' : 'scan';
         $totalChannels = (int) $playlist->enabled_live_channels()->count();
         $epgChannelsAvailable = (int) $epg->channels()->count();
+        $comparisonEpgs = $this->comparisonEpgs($playlist, $epg, $sourceScope);
         $checkpoint = $this->initialCheckpointState(
             playlist: $playlist,
             epg: $epg,
@@ -262,6 +280,9 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             epgChannelsAvailable: $epgChannelsAvailable,
             context: $context,
             mode: $mode,
+            sourceScope: $sourceScope,
+            applyOptions: $applyOptions,
+            comparedEpgSources: $comparisonEpgs->count(),
         );
         $checkpoint = $this->prepareReportState($context, $checkpoint, $mode);
 
@@ -281,6 +302,8 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
         $query->chunkById(self::SCAN_CHUNK_SIZE, function (Collection $channels) use (
             $applyRepairs,
+            $applyOptions,
+            $comparisonEpgs,
             $context,
             $epg,
             $playlist,
@@ -290,6 +313,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             &$chunkNumber,
             &$detailedApplyLogs,
             $start,
+            $sourceScope,
             $threshold
         ): bool {
             if ($context->cancellationRequested()) {
@@ -338,12 +362,19 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 $checkpoint['issues_found']++;
                 $this->incrementBreakdown($checkpoint, 'issue_breakdown', $issue);
 
-                $suggested = $this->similaritySearch->findMatchingEpgChannel($channel, $epg);
-                $matchInsight = $suggested
-                    ? $this->matchInsight($channel, $suggested, $threshold)
-                    : $this->emptyMatchInsight();
+                $comparison = $this->compareSuggestions(
+                    channel: $channel,
+                    selectedEpg: $epg,
+                    candidateEpgs: $comparisonEpgs,
+                    threshold: $threshold,
+                    sourceScope: $sourceScope,
+                );
+                $suggested = $comparison['best_match'];
+                $bestCandidate = $comparison['best_candidate'];
+                $matchInsight = $comparison['match_insight'];
                 $confidence = $matchInsight['confidence'];
                 $repairable = $matchInsight['repairable'];
+                $analysisDecision = $this->analysisDecisionForItem($comparison, $repairable, $sourceScope, $epg->id);
 
                 if ($repairable) {
                     $checkpoint['repair_candidates']++;
@@ -361,22 +392,50 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                     'current_epg_source_name' => $channel->epgChannel?->epg?->name,
                     'suggested_epg_channel_id' => $suggested?->id,
                     'suggested_epg_channel_name' => $suggested?->display_name ?? $suggested?->name ?? $suggested?->channel_id,
-                    'suggested_epg_source_id' => $suggested?->epg_id,
-                    'suggested_epg_source_name' => $suggested?->epg?->name ?? $epg->name,
+                    'suggested_epg_source_id' => $bestCandidate['epg_id'] ?? $suggested?->epg_id,
+                    'suggested_epg_source_name' => $bestCandidate['epg_name'] ?? $suggested?->epg?->name ?? $epg->name,
                     'confidence' => $confidence,
                     'confidence_band' => $matchInsight['confidence_band'],
                     'match_reason' => $matchInsight['match_reason'],
                     'repairable' => $repairable,
-                    'decision' => $this->decisionForItem($suggested, $repairable),
+                    'decision' => $analysisDecision,
+                    'source_scope' => $sourceScope,
+                    'source_candidates' => $comparison['candidates'],
+                    'source_candidates_count' => count($comparison['candidates']),
+                    'selected_epg_source_id' => $epg->id,
+                    'selected_epg_source_name' => $epg->name,
                 ];
 
                 $this->recordPreviewItem($checkpoint, $item);
                 $this->incrementBreakdown($checkpoint, 'decision_breakdown', $item['decision']);
                 $this->incrementBreakdown($checkpoint, 'confidence_breakdown', $item['confidence_band']);
+                if (($comparison['best_match']?->epg_id ?? null) !== null && $comparison['best_match']?->epg_id !== $epg->id) {
+                    $checkpoint['cross_source_candidates']++;
+                }
 
                 if (! $applyRepairs || ! $repairable) {
                     $item['applied'] = false;
+                    $item['apply_outcome'] = $applyRepairs ? 'needs_review' : 'preview_only';
+                    $this->updatePreviewItem($checkpoint, $item);
                     $this->appendReportRow($checkpoint, $item);
+                    $this->incrementBreakdown($checkpoint, 'apply_outcome_breakdown', $item['apply_outcome']);
+                    continue;
+                }
+
+                [$mayApply, $applyOutcome] = $this->evaluateApplyDecision(
+                    item: $item,
+                    issue: $issue,
+                    applyOptions: $applyOptions,
+                    repairsApplied: $checkpoint['repairs_applied'],
+                    selectedEpgId: $epg->id,
+                );
+
+                if (! $mayApply) {
+                    $item['applied'] = false;
+                    $item['apply_outcome'] = $applyOutcome;
+                    $this->updatePreviewItem($checkpoint, $item);
+                    $this->appendReportRow($checkpoint, $item);
+                    $this->incrementBreakdown($checkpoint, 'apply_outcome_breakdown', $item['apply_outcome']);
                     continue;
                 }
 
@@ -388,7 +447,10 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
                 $checkpoint['repairs_applied']++;
                 $item['applied'] = true;
+                $item['apply_outcome'] = 'applied';
+                $this->updatePreviewItem($checkpoint, $item);
                 $this->appendReportRow($checkpoint, $item);
+                $this->incrementBreakdown($checkpoint, 'apply_outcome_breakdown', $item['apply_outcome']);
 
                 if ($detailedApplyLogs < self::MAX_DETAILED_APPLY_LOGS) {
                     $context->info('Applied EPG repair to channel.', [
@@ -461,11 +523,15 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 'repairs_applied' => $checkpoint['repairs_applied'],
                 'epg_channels_available' => $checkpoint['epg_channels_available'],
                 'channels_with_existing_programmes' => $checkpoint['channels_with_existing_programmes'],
+                'compared_epg_sources' => $checkpoint['compared_epg_sources'],
+                'cross_source_candidates' => $checkpoint['cross_source_candidates'],
             ],
             'issue_breakdown' => $checkpoint['issue_breakdown'],
             'decision_breakdown' => $checkpoint['decision_breakdown'],
             'confidence_breakdown' => $checkpoint['confidence_breakdown'],
+            'apply_outcome_breakdown' => $checkpoint['apply_outcome_breakdown'],
             'channels' => $checkpoint['preview_channels'],
+            'source_scope' => $checkpoint['source_scope'],
             'report' => [
                 'path' => $checkpoint['report_path'],
                 'filename' => $checkpoint['report_filename'],
@@ -487,6 +553,10 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
     private function detectIssue(Channel $channel, Epg $epg, array $programmes): ?string
     {
+        if ($channel->epg_map_enabled === false) {
+            return 'mapping_disabled';
+        }
+
         if (! $channel->epg_channel_id) {
             return 'unmapped';
         }
@@ -495,13 +565,17 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             return 'mapped_channel_missing';
         }
 
+        if (blank($channel->epgChannel->channel_id)) {
+            return 'mapped_without_source_key';
+        }
+
         if ($channel->epgChannel->epg_id !== $epg->id) {
             return 'mapped_to_other_epg';
         }
 
         $channelKey = $channel->epgChannel->channel_id;
         if ($channelKey && empty($programmes[$channelKey] ?? [])) {
-            return 'mapped_without_programmes';
+            return 'mapped_without_upcoming_programmes';
         }
 
         return null;
@@ -516,6 +590,9 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         int $epgChannelsAvailable,
         PluginExecutionContext $context,
         string $mode,
+        string $sourceScope,
+        array $applyOptions,
+        int $comparedEpgSources,
     ): array {
         $state = $context->state('epg_repair', []);
 
@@ -523,7 +600,11 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             && ($state['playlist_id'] ?? null) === $playlist->id
             && ($state['epg_id'] ?? null) === $epg->id
             && (int) ($state['hours_ahead'] ?? 0) === $hoursAhead
-            && (float) ($state['confidence_threshold'] ?? 0) === $threshold;
+            && (float) ($state['confidence_threshold'] ?? 0) === $threshold
+            && ($state['source_scope'] ?? 'selected_only') === $sourceScope
+            && ($state['apply_scope'] ?? 'safe_only') === ($applyOptions['apply_scope'] ?? 'safe_only')
+            && (bool) ($state['allow_source_switch'] ?? false) === (bool) ($applyOptions['allow_source_switch'] ?? false)
+            && (int) ($state['max_repairs'] ?? 250) === (int) ($applyOptions['max_repairs'] ?? 250);
 
         if (! $canResume) {
             return [
@@ -532,8 +613,14 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 'epg_id' => $epg->id,
                 'hours_ahead' => $hoursAhead,
                 'confidence_threshold' => $threshold,
+                'source_scope' => $sourceScope,
+                'apply_scope' => $applyOptions['apply_scope'] ?? 'safe_only',
+                'allow_source_switch' => (bool) ($applyOptions['allow_source_switch'] ?? false),
+                'max_repairs' => (int) ($applyOptions['max_repairs'] ?? 250),
                 'total_channels' => $totalChannels,
                 'epg_channels_available' => $epgChannelsAvailable,
+                'compared_epg_sources' => $comparedEpgSources,
+                'cross_source_candidates' => 0,
                 'last_channel_id' => null,
                 'channels_scanned' => 0,
                 'issues_found' => 0,
@@ -546,6 +633,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 'issue_breakdown' => [],
                 'decision_breakdown' => [],
                 'confidence_breakdown' => [],
+                'apply_outcome_breakdown' => [],
                 'report_path' => null,
                 'report_filename' => null,
                 'report_rows_written' => 0,
@@ -554,13 +642,16 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
         $state['total_channels'] = $totalChannels;
         $state['epg_channels_available'] = $epgChannelsAvailable;
+        $state['compared_epg_sources'] = $comparedEpgSources;
         $state['preview_channels'] = $state['preview_channels'] ?? [];
         $state['preview_truncated'] = (bool) ($state['preview_truncated'] ?? false);
         $state['issue_breakdown'] = $state['issue_breakdown'] ?? [];
         $state['decision_breakdown'] = $state['decision_breakdown'] ?? [];
         $state['confidence_breakdown'] = $state['confidence_breakdown'] ?? [];
+        $state['apply_outcome_breakdown'] = $state['apply_outcome_breakdown'] ?? [];
         $state['repairs_applied'] = (int) ($state['repairs_applied'] ?? 0);
         $state['detailed_apply_logs'] = (int) ($state['detailed_apply_logs'] ?? 0);
+        $state['cross_source_candidates'] = (int) ($state['cross_source_candidates'] ?? 0);
         $state['report_path'] = $state['report_path'] ?? null;
         $state['report_filename'] = $state['report_filename'] ?? null;
         $state['report_rows_written'] = (int) ($state['report_rows_written'] ?? 0);
@@ -619,9 +710,12 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'suggested_epg_channel_id',
             'suggested_epg_channel_name',
             'suggested_epg_source_name',
+            'source_scope',
             'confidence',
             'confidence_band',
             'match_reason',
+            'source_candidates_summary',
+            'apply_outcome',
             'repairable',
             'applied',
         ]).PHP_EOL);
@@ -651,9 +745,12 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             $item['suggested_epg_channel_id'],
             $item['suggested_epg_channel_name'],
             $item['suggested_epg_source_name'],
+            $item['source_scope'] ?? 'selected_only',
             $item['confidence'],
             $item['confidence_band'],
             $item['match_reason'],
+            $this->sourceCandidatesSummary($item['source_candidates'] ?? []),
+            $item['apply_outcome'] ?? 'preview_only',
             $item['repairable'] ? 'yes' : 'no',
             ($item['applied'] ?? false) ? 'yes' : 'no',
         ]));
@@ -672,6 +769,18 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         return rtrim($csv, "\r\n");
     }
 
+    private function sourceCandidatesSummary(array $candidates): string
+    {
+        return collect($candidates)
+            ->map(fn (array $candidate) => sprintf(
+                '%s:%s:%s',
+                $candidate['epg_name'] ?? 'unknown',
+                $candidate['epg_channel_name'] ?? 'unknown',
+                $candidate['confidence_band'] ?? 'none',
+            ))
+            ->implode(' | ');
+    }
+
     private function resultSnapshot(array $report): array
     {
         $channels = $report['channels'] ?? [];
@@ -681,10 +790,12 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'progress' => $report['progress'] ?? 100,
             'playlist' => $report['playlist'] ?? null,
             'epg' => $report['epg'] ?? null,
+            'source_scope' => $report['source_scope'] ?? 'selected_only',
             'totals' => $report['totals'] ?? [],
             'issue_breakdown' => $report['issue_breakdown'] ?? [],
             'decision_breakdown' => $report['decision_breakdown'] ?? [],
             'confidence_breakdown' => $report['confidence_breakdown'] ?? [],
+            'apply_outcome_breakdown' => $report['apply_outcome_breakdown'] ?? [],
             'channels_preview' => $preview,
             'channels_preview_count' => count($preview),
             'channels_total_count' => data_get($report, 'totals.issues_found', count($channels)),
@@ -716,6 +827,19 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         $checkpoint['preview_truncated'] = true;
     }
 
+    private function updatePreviewItem(array &$checkpoint, array $item): void
+    {
+        foreach ($checkpoint['preview_channels'] ?? [] as $index => $previewItem) {
+            if (($previewItem['channel_id'] ?? null) !== ($item['channel_id'] ?? null)) {
+                continue;
+            }
+
+            $checkpoint['preview_channels'][$index] = $item;
+
+            return;
+        }
+    }
+
     private function emptyMatchInsight(): array
     {
         return [
@@ -726,13 +850,147 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         ];
     }
 
-    private function decisionForItem(?EpgChannel $suggested, bool $repairable): string
+    private function analysisDecisionForItem(array $comparison, bool $repairable, string $sourceScope, int $selectedEpgId): string
     {
+        $suggested = $comparison['best_match'];
         if (! $suggested) {
             return 'no_candidate';
         }
 
-        return $repairable ? 'repairable' : 'needs_review';
+        if (! $repairable) {
+            return 'needs_review';
+        }
+
+        if ($sourceScope === 'all_owned' && $suggested->epg_id !== $selectedEpgId) {
+            return 'better_source_available';
+        }
+
+        return 'repairable';
+    }
+
+    private function comparisonEpgs(Playlist $playlist, Epg $selectedEpg, string $sourceScope): Collection
+    {
+        if ($sourceScope !== 'all_owned') {
+            return collect([$selectedEpg]);
+        }
+
+        $epgs = Epg::query()
+            ->where('user_id', $playlist->user_id)
+            ->where('status', Status::Completed)
+            ->orderByRaw('CASE WHEN id = ? THEN 0 ELSE 1 END', [$selectedEpg->id])
+            ->orderBy('name')
+            ->get();
+
+        return $epgs->isEmpty() ? collect([$selectedEpg]) : $epgs;
+    }
+
+    private function compareSuggestions(
+        Channel $channel,
+        Epg $selectedEpg,
+        Collection $candidateEpgs,
+        float $threshold,
+        string $sourceScope,
+    ): array {
+        $candidates = $candidateEpgs
+            ->map(function (Epg $candidateEpg) use ($channel, $selectedEpg, $threshold) {
+                $match = $this->similaritySearch->findMatchingEpgChannel($channel, $candidateEpg);
+                if (! $match) {
+                    return null;
+                }
+
+                $insight = $this->matchInsight($channel, $match, $threshold);
+
+                return [
+                    'epg_id' => $candidateEpg->id,
+                    'epg_name' => $candidateEpg->name,
+                    'epg_selected' => $candidateEpg->id === $selectedEpg->id,
+                    'epg_channel_id' => $match->id,
+                    'epg_channel_name' => $match->display_name ?? $match->name ?? $match->channel_id,
+                    'confidence' => $insight['confidence'],
+                    'confidence_band' => $insight['confidence_band'],
+                    'match_reason' => $insight['match_reason'],
+                    'repairable' => $insight['repairable'],
+                    'match' => $match,
+                    'insight' => $insight,
+                ];
+            })
+            ->filter()
+            ->sort(function (array $left, array $right) {
+                $confidenceCompare = ($right['confidence'] ?? 0) <=> ($left['confidence'] ?? 0);
+                if ($confidenceCompare !== 0) {
+                    return $confidenceCompare;
+                }
+
+                if ($left['epg_selected'] !== $right['epg_selected']) {
+                    return $left['epg_selected'] ? -1 : 1;
+                }
+
+                return strcmp((string) $left['epg_name'], (string) $right['epg_name']);
+            })
+            ->values();
+
+        $best = $candidates->first();
+
+        return [
+            'best_match' => $best['match'] ?? null,
+            'best_candidate' => $best,
+            'match_insight' => $best['insight'] ?? $this->emptyMatchInsight(),
+            'candidates' => $candidates
+                ->take(self::MAX_SOURCE_CANDIDATES)
+                ->map(fn (array $candidate) => [
+                    'epg_id' => $candidate['epg_id'],
+                    'epg_name' => $candidate['epg_name'],
+                    'epg_selected' => $candidate['epg_selected'],
+                    'epg_channel_id' => $candidate['epg_channel_id'],
+                    'epg_channel_name' => $candidate['epg_channel_name'],
+                    'confidence' => $candidate['confidence'],
+                    'confidence_band' => $candidate['confidence_band'],
+                    'match_reason' => $candidate['match_reason'],
+                    'repairable' => $candidate['repairable'],
+                ])
+                ->all(),
+            'compared_all_sources' => $sourceScope === 'all_owned',
+        ];
+    }
+
+    private function evaluateApplyDecision(
+        array $item,
+        string $issue,
+        array $applyOptions,
+        int $repairsApplied,
+        int $selectedEpgId,
+    ): array {
+        $maxRepairs = (int) ($applyOptions['max_repairs'] ?? 250);
+        if ($maxRepairs > 0 && $repairsApplied >= $maxRepairs) {
+            return [false, 'max_repairs_reached'];
+        }
+
+        $scope = $applyOptions['apply_scope'] ?? 'safe_only';
+        $allowSourceSwitch = (bool) ($applyOptions['allow_source_switch'] ?? false);
+
+        $allowedIssues = match ($scope) {
+            'unmapped_only' => ['unmapped'],
+            'broken_only' => ['mapped_channel_missing', 'mapped_without_source_key', 'mapped_without_upcoming_programmes'],
+            'all_repairable' => ['unmapped', 'mapped_channel_missing', 'mapped_without_source_key', 'mapped_to_other_epg', 'mapped_without_upcoming_programmes'],
+            default => ['unmapped', 'mapped_channel_missing', 'mapped_without_source_key', 'mapped_without_upcoming_programmes'],
+        };
+
+        if (! in_array($issue, $allowedIssues, true)) {
+            return [false, 'skipped_by_scope'];
+        }
+
+        $currentSource = $item['current_epg_source_id'] ?? null;
+        $suggestedSource = $item['suggested_epg_source_id'] ?? $selectedEpgId;
+
+        if (! $allowSourceSwitch && $currentSource !== null && $currentSource !== $suggestedSource) {
+            return [false, 'source_switch_blocked'];
+        }
+
+        if (($item['decision'] ?? null) === 'better_source_available' && ! $allowSourceSwitch) {
+            return [false, 'better_source_available'];
+        }
+
+        return [true, 'applied'];
     }
 
     private function matchInsight(Channel $channel, EpgChannel $epgChannel, float $threshold): array
