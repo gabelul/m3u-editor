@@ -6,6 +6,7 @@ use App\Facades\LogoFacade;
 use App\Models\Channel;
 use App\Models\Episode;
 use App\Models\Network;
+use App\Models\PlaylistAlias;
 use App\Models\PlaylistProfile;
 use App\Models\StreamProfile;
 use App\Services\M3uProxyService;
@@ -212,6 +213,15 @@ class M3uProxyStreamMonitor extends Page
                 ->groupBy('stream_id')
                 ->toArray();
 
+            // Pre-fetch alias names for all playlist UUIDs to avoid N+1
+            $playlistUuids = collect($apiStreams['streams'])
+                ->pluck('metadata.playlist_uuid')
+                ->filter()
+                ->unique()
+                ->values();
+            $aliasNamesByUuid = PlaylistAlias::whereIn('uuid', $playlistUuids)
+                ->pluck('name', 'uuid');
+
             foreach ($apiStreams['streams'] as $stream) {
                 $streamId = $stream['stream_id'];
                 $streamClients = $clientsByStream[$streamId] ?? [];
@@ -299,6 +309,9 @@ class M3uProxyStreamMonitor extends Page
                     }
                 }
 
+                // Check if this stream belongs to an alias
+                $aliasName = $aliasNamesByUuid[$stream['metadata']['playlist_uuid'] ?? ''] ?? null;
+
                 $streams[] = [
                     'stream_id' => $streamId,
                     'source_url' => $this->truncateUrl($stream['original_url']),
@@ -319,6 +332,7 @@ class M3uProxyStreamMonitor extends Page
                     'transcoding' => $transcoding,
                     'transcoding_format' => $transcodingFormat,
                     'provider_profile' => $providerProfileName,
+                    'alias_name' => $aliasName,
                     // Failover details
                     'failover_urls' => $stream['failover_urls'] ?? [],
                     'failover_resolver_url' => $stream['failover_resolver_url'] ?? null,
@@ -364,6 +378,7 @@ class M3uProxyStreamMonitor extends Page
                     'transcoding_format' => null,
                     'using_failover' => false,
                     'broadcast' => true,
+                    'alias_name' => null,
                 ];
             }
         }

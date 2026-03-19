@@ -33,6 +33,7 @@ use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Spatie\Tags\Tag;
 
 /**
  * Service to handle playlist-related operations.
@@ -59,7 +60,7 @@ class PlaylistService
             try {
                 $settings = app(GeneralSettings::class);
                 $proxyUrlOverride = $settings->url_override ?? null;
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
             }
         }
         if ($proxyUrlOverride) {
@@ -88,8 +89,9 @@ class PlaylistService
         $playlistAuth = null;
         if (method_exists($playlist, 'playlistAuths')) {
             $playlistAuth = $playlist->playlistAuths()->where('enabled', true)->first();
-        } elseif ($playlist instanceof PlaylistAlias) {
-            // If PlaylistAlias, check if direct authentication is set
+        }
+        // For PlaylistAlias, fall back to direct alias credentials if no PlaylistAuth found
+        if (! $playlistAuth && $playlist instanceof PlaylistAlias) {
             $playlistAuth = $playlist->username && $playlist->password
                 ? (object) ['username' => $playlist->username, 'password' => $playlist->password]
                 : null;
@@ -281,7 +283,7 @@ class PlaylistService
         }
 
         // Finally try playlist alias
-        $alias = PlaylistAlias::where('uuid', $uuid)->where('enabled', true)->first();
+        $alias = PlaylistAlias::where('uuid', $uuid)->first();
         if ($alias) {
             return $alias; // Return the alias itself, not the underlying playlist
         }
@@ -436,25 +438,26 @@ class PlaylistService
         }
 
         // Method 1b: Direct authentication with PlaylistAlias credentials
-        $alias = PlaylistAlias::where('enabled', true)
-            ->where('username', $username)
-            ->where('password', $password)
-            ->with(['user', 'playlist', 'customPlaylist'])
-            ->first();
+        // Only check if Method 1 didn't find a result
+        if (! $playlist) {
+            $alias = PlaylistAlias::where('username', $username)
+                ->where('password', $password)
+                ->with(['user', 'playlist', 'customPlaylist'])
+                ->first();
 
-        if ($alias) {
-            // If alias found but expired, treat as not found
-            if ($alias->isExpired()) {
-                return false;
+            if ($alias) {
+                // If alias found but expired, fall through to Method 2
+                if (! $alias->isExpired()) {
+                    return [
+                        $alias,
+                        'alias_auth',
+                        $username,
+                        $password,
+                    ];
+                }
             }
-
-            return [
-                $alias,
-                'alias_auth',
-                $username,
-                $password,
-            ];
         }
+
         // Method 2: Fall back to original authentication:
         //      (username = playlist owner, password = playlist UUID)
         if (! $playlist) {
@@ -504,7 +507,6 @@ class PlaylistService
                                 'playlist',
                                 'customPlaylist',
                             ])->where('uuid', $password)
-                                ->where('enabled', true)
                                 ->firstOrFail();
 
                             // Verify username matches playlist alias owner's name
@@ -850,7 +852,7 @@ class PlaylistService
                 }
 
                 if ($originalName) {
-                    $tag = \Spatie\Tags\Tag::findOrCreate($originalName, $tagType);
+                    $tag = Tag::findOrCreate($originalName, $tagType);
                     $playlist->attachTag($tag);
 
                     $item->detachTags($playlistTags);
@@ -858,7 +860,7 @@ class PlaylistService
                 }
             }
         } elseif ($tagName) {
-            $tag = \Spatie\Tags\Tag::findOrCreate($tagName, $tagType);
+            $tag = Tag::findOrCreate($tagName, $tagType);
             $playlist->attachTag($tag);
 
             foreach ($cursor as $item) {
