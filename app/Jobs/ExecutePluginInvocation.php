@@ -22,7 +22,7 @@ class ExecutePluginInvocation implements ShouldQueue
     public function handle(PluginManager $pluginManager): void
     {
         $plugin = ExtensionPlugin::find($this->pluginId);
-        if (! $plugin || ! $plugin->enabled) {
+        if (! $plugin || ! $plugin->enabled || ! $plugin->isInstalled()) {
             return;
         }
 

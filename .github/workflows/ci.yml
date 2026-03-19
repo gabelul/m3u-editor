@@ -161,6 +161,18 @@ jobs:
           touch database/jobs.sqlite
           php artisan migrate --force
 
+      - name: Validate bundled plugins
+        env:
+          DB_CONNECTION: pg_test
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          TEST_DB_DATABASE: m3ue_test
+          TEST_DB_USERNAME: testing
+          TEST_DB_PASSWORD: testing
+        run: |
+          php artisan plugins:discover
+          php artisan plugins:validate
+
       - name: Run Pest tests
         env:
           DB_CONNECTION: pg_test

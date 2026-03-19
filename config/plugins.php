@@ -7,6 +7,16 @@ return [
         base_path('plugins'),
     ],
 
+    'cleanup_modes' => [
+        'preserve',
+        'purge',
+    ],
+
+    'owned_storage_roots' => [
+        'plugin-data',
+        'plugin-reports',
+    ],
+
     'capabilities' => [
         'epg_repair' => \App\Plugins\Contracts\EpgRepairPluginInterface::class,
         'epg_processor' => \App\Plugins\Contracts\EpgProcessorPluginInterface::class,

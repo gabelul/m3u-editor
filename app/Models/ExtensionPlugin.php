@@ -24,14 +24,18 @@ class ExtensionPlugin extends Model
         'actions',
         'settings_schema',
         'settings',
+        'data_ownership',
         'source_type',
         'path',
         'available',
         'enabled',
+        'installation_status',
+        'last_cleanup_mode',
         'validation_status',
         'validation_errors',
         'last_discovered_at',
         'last_validated_at',
+        'uninstalled_at',
     ];
 
     protected $casts = [
@@ -40,11 +44,13 @@ class ExtensionPlugin extends Model
         'actions' => 'array',
         'settings_schema' => 'array',
         'settings' => 'array',
+        'data_ownership' => 'array',
         'validation_errors' => 'array',
         'available' => 'boolean',
         'enabled' => 'boolean',
         'last_discovered_at' => 'datetime',
         'last_validated_at' => 'datetime',
+        'uninstalled_at' => 'datetime',
     ];
 
     public function runs(): HasMany
@@ -78,5 +84,22 @@ class ExtensionPlugin extends Model
     public function getSetting(string $key, mixed $default = null): mixed
     {
         return data_get($this->settings ?? [], $key, $default);
+    }
+
+    public function isInstalled(): bool
+    {
+        return ($this->installation_status ?? 'installed') === 'installed';
+    }
+
+    public function defaultCleanupMode(): string
+    {
+        return data_get($this->data_ownership ?? [], 'default_cleanup_policy', 'preserve');
+    }
+
+    public function hasActiveRuns(): bool
+    {
+        return $this->runs()
+            ->where('status', 'running')
+            ->exists();
     }
 }

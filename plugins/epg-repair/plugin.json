@@ -13,6 +13,12 @@
   "hooks": [
     "epg.cache.generated"
   ],
+  "data_ownership": {
+    "directories": [
+      "plugin-reports/epg-repair"
+    ],
+    "default_cleanup_policy": "preserve"
+  },
   "settings": [
     {
       "id": "auto_scan_on_epg_ready",

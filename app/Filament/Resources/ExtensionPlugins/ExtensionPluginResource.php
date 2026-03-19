@@ -196,6 +196,9 @@ class ExtensionPluginResource extends Resource
                     ->boolean(),
                 IconColumn::make('enabled')
                     ->boolean(),
+                TextColumn::make('installation_status')
+                    ->badge()
+                    ->color(fn (string $state) => $state === 'installed' ? 'success' : 'gray'),
                 TextColumn::make('last_validated_at')
                     ->since()
                     ->sortable(),
@@ -408,6 +411,8 @@ class ExtensionPluginResource extends Resource
                 <div class="grid gap-3 sm:grid-cols-2">
                     '.self::stackedStat('Validation', e(Str::headline($record->validation_status ?? 'pending'))).'
                     '.self::stackedStat('Enabled', $record->enabled ? 'Yes' : 'No').'
+                    '.self::stackedStat('Lifecycle', e(Str::headline($record->installation_status ?? 'installed'))).'
+                    '.self::stackedStat('Cleanup default', e(Str::headline($record->defaultCleanupMode()))).'
                 </div>
             </div>
         ';
@@ -425,7 +430,8 @@ class ExtensionPluginResource extends Resource
             '<div class="text-base font-semibold text-gray-950 dark:text-white">'.e($record->name).'</div>',
             '<div class="text-sm text-gray-600 dark:text-gray-300">Version '.e($record->version).' · '.e($record->description ?: 'No description provided.').'</div>',
             '<div class="text-xs text-gray-500 dark:text-gray-400">Class: '.e($record->class_name ?: 'Unknown').'</div>',
-            '<div class="text-xs text-gray-500 dark:text-gray-400">Use the header actions for one-off runs. Use settings for defaults and automation.</div>',
+            '<div class="text-xs text-gray-500 dark:text-gray-400">Lifecycle: disable pauses execution, uninstall changes lifecycle state, forget registry only removes the row.</div>',
+            '<div class="text-xs text-gray-500 dark:text-gray-400">Declared ownership: '.e(self::ownershipSummary($record)).'</div>',
         ]);
     }
 
@@ -511,6 +517,10 @@ class ExtensionPluginResource extends Resource
 
     protected static function statusBadge(ExtensionPlugin $record): string
     {
+        if (! $record->isInstalled()) {
+            return '<span class="inline-flex items-center rounded-full border border-gray-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:border-gray-800 dark:bg-gray-900/80 dark:text-gray-300">Uninstalled</span>';
+        }
+
         if (! $record->enabled) {
             return '<span class="inline-flex items-center rounded-full border border-gray-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:border-gray-800 dark:bg-gray-900/80 dark:text-gray-300">Disabled</span>';
         }
@@ -586,5 +596,25 @@ class ExtensionPluginResource extends Resource
         $epg = Epg::query()->find($epgId);
 
         return $epg ? $epg->name.' (#'.$epg->id.')' : 'EPG #'.$epgId;
+    }
+
+    protected static function ownershipSummary(ExtensionPlugin $record): string
+    {
+        $ownership = $record->data_ownership ?? [];
+        $parts = [];
+
+        if (($ownership['tables'] ?? []) !== []) {
+            $parts[] = count($ownership['tables']).' table(s)';
+        }
+
+        if (($ownership['directories'] ?? []) !== []) {
+            $parts[] = count($ownership['directories']).' director'.(count($ownership['directories']) === 1 ? 'y' : 'ies');
+        }
+
+        if (($ownership['files'] ?? []) !== []) {
+            $parts[] = count($ownership['files']).' file(s)';
+        }
+
+        return $parts === [] ? 'No plugin-owned data declared' : implode(' · ', $parts);
     }
 }

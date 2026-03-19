@@ -6,6 +6,7 @@ use App\Plugins\Contracts\HookablePluginInterface;
 use App\Plugins\Contracts\PluginInterface;
 use App\Plugins\Support\PluginManifest;
 use App\Plugins\Support\PluginValidationResult;
+use Illuminate\Support\Str;
 use Throwable;
 
 class PluginValidator
@@ -77,6 +78,8 @@ class PluginValidator
             }
         }
 
+        $errors = [...$errors, ...$this->validateDataOwnership($manifest)];
+
         if (! file_exists($manifest->entrypointPath())) {
             $errors[] = "Missing entrypoint file [{$manifest->entrypoint}]";
         } else {
@@ -133,6 +136,48 @@ class PluginValidator
 
         if ($type === 'model_select' && blank($field['model'] ?? null)) {
             $errors[] = "{$group}.{$fieldId} model_select fields require [model]";
+        }
+
+        return $errors;
+    }
+
+    private function validateDataOwnership(PluginManifest $manifest): array
+    {
+        $errors = [];
+        $ownership = $manifest->dataOwnership;
+
+        if (! in_array($ownership['default_cleanup_policy'] ?? null, config('plugins.cleanup_modes', []), true)) {
+            $errors[] = 'data_ownership.default_cleanup_policy must be one of the supported cleanup modes.';
+        }
+
+        $tablePrefix = (string) ($ownership['table_prefix'] ?? '');
+        foreach ($ownership['tables'] ?? [] as $table) {
+            if (! Str::startsWith($table, $tablePrefix)) {
+                $errors[] = "Declared table [{$table}] must start with [{$tablePrefix}] so uninstall can safely purge plugin-owned data.";
+            }
+        }
+
+        $allowedRoots = collect(config('plugins.owned_storage_roots', []))
+            ->map(fn (string $root) => trim($root, '/'))
+            ->filter()
+            ->all();
+
+        foreach (['directories', 'files'] as $group) {
+            foreach ($ownership[$group] ?? [] as $path) {
+                if (Str::startsWith($path, '/') || Str::contains($path, ['..', '\\'])) {
+                    $errors[] = "Declared {$group} path [{$path}] must stay inside approved storage roots.";
+                    continue;
+                }
+
+                if (! collect($allowedRoots)->contains(fn (string $root) => Str::startsWith($path, $root.'/') || $path === $root)) {
+                    $errors[] = "Declared {$group} path [{$path}] must start with one of: ".implode(', ', $allowedRoots);
+                    continue;
+                }
+
+                if (! Str::contains($path, '/'.$manifest->id) && ! Str::contains($path, '/'.Str::of($manifest->id)->replace('-', '_')->value())) {
+                    $errors[] = "Declared {$group} path [{$path}] must include the plugin id so cleanup stays namespaced.";
+                }
+            }
         }
 
         return $errors;

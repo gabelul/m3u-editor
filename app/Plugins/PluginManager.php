@@ -6,13 +6,18 @@ use App\Models\ExtensionPlugin;
 use App\Models\ExtensionPluginRun;
 use App\Models\User;
 use App\Plugins\Contracts\HookablePluginInterface;
+use App\Plugins\Contracts\LifecyclePluginInterface;
 use App\Plugins\Contracts\PluginInterface;
 use App\Plugins\Contracts\ScheduledPluginInterface;
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
+use App\Plugins\Support\PluginUninstallContext;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 
@@ -21,6 +26,7 @@ class PluginManager
     public function __construct(
         private readonly PluginValidator $validator,
         private readonly PluginSchemaMapper $schemaMapper,
+        private readonly PluginManifestLoader $manifestLoader,
     ) {}
 
     public function discover(): array
@@ -45,6 +51,7 @@ class PluginManager
                 'hooks' => $manifest?->hooks ?? Arr::get($result->manifestData, 'hooks', []),
                 'actions' => $manifest?->actions ?? Arr::get($result->manifestData, 'actions', []),
                 'settings_schema' => $manifest?->settings ?? Arr::get($result->manifestData, 'settings', []),
+                'data_ownership' => $manifest?->dataOwnership ?? Arr::get($result->manifestData, 'data_ownership', []),
                 'path' => $pluginPath,
                 'source_type' => 'local',
                 'available' => true,
@@ -83,6 +90,7 @@ class PluginManager
             'hooks' => $result->manifest?->hooks ?? $plugin->hooks,
             'actions' => $result->manifest?->actions ?? $plugin->actions,
             'settings_schema' => $result->manifest?->settings ?? $plugin->settings_schema,
+            'data_ownership' => $result->manifest?->dataOwnership ?? $plugin->data_ownership,
             'validation_status' => $result->valid ? 'valid' : 'invalid',
             'validation_errors' => $result->errors,
             'last_validated_at' => now(),
@@ -209,6 +217,7 @@ class PluginManager
         return ExtensionPlugin::query()
             ->where('enabled', true)
             ->where('available', true)
+            ->where('installation_status', 'installed')
             ->where('validation_status', 'valid')
             ->get()
             ->filter(fn (ExtensionPlugin $plugin) => in_array($hook, $plugin->hooks ?? [], true))
@@ -218,6 +227,10 @@ class PluginManager
     public function instantiate(ExtensionPlugin $plugin): PluginInterface
     {
         $plugin = $this->validate($plugin);
+
+        if (! $plugin->isInstalled()) {
+            throw new RuntimeException("Plugin [{$plugin->plugin_id}] has been uninstalled and must be reinstalled before it can run.");
+        }
 
         if ($plugin->validation_status !== 'valid') {
             throw new RuntimeException("Plugin [{$plugin->plugin_id}] is not valid.");
@@ -232,6 +245,53 @@ class PluginManager
         }
 
         return $instance;
+    }
+
+    public function uninstall(ExtensionPlugin $plugin, string $cleanupMode = 'preserve', ?int $userId = null): ExtensionPlugin
+    {
+        if (! in_array($cleanupMode, config('plugins.cleanup_modes', []), true)) {
+            throw new RuntimeException("Unsupported cleanup mode [{$cleanupMode}]");
+        }
+
+        $activeRuns = $plugin->runs()
+            ->where('status', 'running')
+            ->get();
+
+        foreach ($activeRuns as $run) {
+            $this->requestCancellation($run, $userId);
+        }
+
+        if ($cleanupMode === 'purge' && $activeRuns->isNotEmpty()) {
+            throw new RuntimeException('Active runs were asked to stop. Wait for them to finish, then retry uninstall with data purge.');
+        }
+
+        $ownership = $this->ownershipForPlugin($plugin);
+
+        if ($cleanupMode === 'purge') {
+            $this->runPluginUninstallHook($plugin, $cleanupMode, $ownership, $userId);
+            $this->purgeOwnedData($ownership);
+        }
+
+        $plugin->update([
+            'enabled' => false,
+            'installation_status' => 'uninstalled',
+            'last_cleanup_mode' => $cleanupMode,
+            'uninstalled_at' => now(),
+            'data_ownership' => $ownership,
+        ]);
+
+        return $plugin->fresh();
+    }
+
+    public function reinstall(ExtensionPlugin $plugin): ExtensionPlugin
+    {
+        $plugin->update([
+            'installation_status' => 'installed',
+            'last_cleanup_mode' => null,
+            'uninstalled_at' => null,
+        ]);
+
+        return $this->validate($plugin->fresh());
     }
 
     public function requestCancellation(ExtensionPluginRun $run, ?int $userId = null): ExtensionPluginRun
@@ -350,6 +410,64 @@ class PluginManager
         }
 
         return array_values(array_unique($paths));
+    }
+
+    private function ownershipForPlugin(ExtensionPlugin $plugin): array
+    {
+        try {
+            if ($plugin->path && file_exists((string) $plugin->path.DIRECTORY_SEPARATOR.'plugin.json')) {
+                return $this->manifestLoader->load((string) $plugin->path)->dataOwnership;
+            }
+        } catch (Throwable) {
+            // Fall back to the last persisted ownership snapshot so uninstall can still proceed.
+        }
+
+        return $plugin->data_ownership ?? [
+            'plugin_id' => $plugin->plugin_id,
+            'table_prefix' => 'plugin_'.Str::of($plugin->plugin_id)->replace('-', '_')->lower()->value().'_',
+            'tables' => [],
+            'directories' => [],
+            'files' => [],
+            'default_cleanup_policy' => 'preserve',
+        ];
+    }
+
+    private function runPluginUninstallHook(ExtensionPlugin $plugin, string $cleanupMode, array $ownership, ?int $userId): void
+    {
+        if (! $plugin->path || ! file_exists(rtrim((string) $plugin->path, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.(string) $plugin->entrypoint)) {
+            return;
+        }
+
+        require_once rtrim((string) $plugin->path, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$plugin->entrypoint;
+
+        $instance = app($plugin->class_name);
+        if (! $instance instanceof LifecyclePluginInterface) {
+            return;
+        }
+
+        $instance->uninstall(new PluginUninstallContext(
+            plugin: $plugin->fresh(),
+            cleanupMode: $cleanupMode,
+            dataOwnership: $ownership,
+            user: $userId ? User::find($userId) : null,
+        ));
+    }
+
+    private function purgeOwnedData(array $ownership): void
+    {
+        foreach ($ownership['files'] ?? [] as $file) {
+            Storage::disk('local')->delete($file);
+        }
+
+        foreach ($ownership['directories'] ?? [] as $directory) {
+            Storage::disk('local')->deleteDirectory($directory);
+        }
+
+        foreach ($ownership['tables'] ?? [] as $table) {
+            if (Schema::hasTable($table)) {
+                Schema::drop($table);
+            }
+        }
     }
 
     private function prepareRun(ExtensionPlugin $plugin, array $attributes, array $options = []): ExtensionPluginRun

@@ -33,6 +33,10 @@ Example:
   "class": "AppLocalPlugins\\EpgRepair\\Plugin",
   "capabilities": ["epg_repair", "scheduled"],
   "hooks": ["epg.cache.generated"],
+  "data_ownership": {
+    "directories": ["plugin-reports/epg-repair"],
+    "default_cleanup_policy": "preserve"
+  },
   "settings": [],
   "actions": []
 }
@@ -52,6 +56,73 @@ Important fields:
 - `hooks`: optional lifecycle hooks the plugin wants to receive
 - `settings`: operator-configurable schema
 - `actions`: manual actions exposed in the plugin edit page
+- `data_ownership`: plugin-owned tables, files, and directories that uninstall may preserve or purge
+
+## Lifecycle
+
+The host treats plugin lifecycle states explicitly:
+
+- `Enable`: plugin can run manual actions, hooks, and schedules
+- `Disable`: plugin stays installed, but nothing runs
+- `Uninstall`: plugin is marked uninstalled and optionally purges plugin-owned data
+- `Forget Registry Record`: removes only the `extension_plugins` row; local files remain and discovery can register the plugin again
+
+`Disable` is reversible.
+
+`Uninstall` is the action that changes lifecycle state and drives cleanup.
+
+## Data Ownership
+
+Plugins that persist their own data must declare it in `data_ownership`.
+
+Supported keys:
+
+- `tables`
+- `directories`
+- `files`
+- `default_cleanup_policy`
+
+Cleanup policies:
+
+- `preserve`
+- `purge`
+
+### Table naming rules
+
+Plugin-owned tables must start with:
+
+```text
+plugin_<plugin_id_with_dashes_replaced_by_underscores>_
+```
+
+Example for `epg-repair`:
+
+```text
+plugin_epg_repair_scan_candidates
+```
+
+### Storage path rules
+
+Plugin-owned files and directories must live under approved storage roots and remain namespaced by plugin id.
+
+Current approved roots:
+
+- `plugin-data/<plugin-id>/...`
+- `plugin-reports/<plugin-id>/...`
+
+Examples:
+
+- `plugin-reports/epg-repair`
+- `plugin-data/epg-repair/cache/state.json`
+
+Invalid examples:
+
+- `/tmp/epg-repair`
+- `storage/app/plugin-reports/epg-repair`
+- `plugin-reports/shared`
+- `../reports/epg-repair`
+
+The host uses these declarations during uninstall so it can safely preserve or purge plugin-owned artifacts without guessing.
 
 ## Capabilities
 
@@ -125,12 +196,15 @@ Supported schema field types:
 4. Configure settings.
 5. Enable it.
 6. Run manual actions or let hooks/schedules invoke it.
+7. If you remove the plugin later, choose whether uninstall should preserve or purge the declared plugin-owned data.
 
 ## Execution Model
 
 - Manual actions are queued through `ExecutePluginInvocation`
 - Hook invocations are queued through `PluginHookDispatcher`
 - Runs are persisted in `extension_plugin_runs`
+- Uninstalled plugins cannot execute until they are explicitly reinstalled
+- Uninstall cleanup only touches plugin-owned data declared in the manifest
 
 ## Reference Plugin
 

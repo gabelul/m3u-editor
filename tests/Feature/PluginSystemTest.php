@@ -520,6 +520,66 @@ it('prefills plugin action fields from saved settings when declared', function (
     expect($components['confidence_threshold']->getDefaultState())->toBe(0.8);
 });
 
+it('records plugin-owned data declarations and preserves them on uninstall by default', function () {
+    Storage::fake('local');
+
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    Storage::disk('local')->put('plugin-reports/epg-repair/keep-me.csv', 'report');
+
+    $plugin = $pluginManager->uninstall($plugin->fresh(), 'preserve');
+
+    expect($plugin->isInstalled())->toBeFalse();
+    expect($plugin->enabled)->toBeFalse();
+    expect($plugin->last_cleanup_mode)->toBe('preserve');
+    expect($plugin->uninstalled_at)->not->toBeNull();
+    expect(data_get($plugin->data_ownership, 'directories'))->toContain('plugin-reports/epg-repair');
+    expect(Storage::disk('local')->exists('plugin-reports/epg-repair/keep-me.csv'))->toBeTrue();
+});
+
+it('purges declared plugin-owned data and blocks execution until reinstall', function () {
+    Storage::fake('local');
+
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    Storage::disk('local')->put('plugin-reports/epg-repair/remove-me.csv', 'report');
+
+    $plugin = $pluginManager->uninstall($plugin->fresh(), 'purge');
+
+    expect($plugin->isInstalled())->toBeFalse();
+    expect($plugin->last_cleanup_mode)->toBe('purge');
+    expect(Storage::disk('local')->exists('plugin-reports/epg-repair/remove-me.csv'))->toBeFalse();
+
+    expect(fn () => $pluginManager->instantiate($plugin->fresh()))
+        ->toThrow(\RuntimeException::class, 'has been uninstalled');
+
+    $reinstalled = $pluginManager->reinstall($plugin->fresh());
+
+    expect($reinstalled->isInstalled())->toBeTrue();
+    expect($reinstalled->uninstalled_at)->toBeNull();
+    expect($reinstalled->last_cleanup_mode)->toBeNull();
+});
+
+it('can rediscover a forgotten registry row without treating it as uninstall cleanup', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $pluginId = $plugin->plugin_id;
+
+    $plugin->delete();
+
+    expect(ExtensionPlugin::query()->where('plugin_id', $pluginId)->exists())->toBeFalse();
+
+    $rediscovered = $pluginManager->discover()[0];
+
+    expect($rediscovered->plugin_id)->toBe($pluginId);
+    expect($rediscovered->isInstalled())->toBeTrue();
+    expect($rediscovered->last_cleanup_mode)->toBeNull();
+});
+
 it('loads a plugin run detail page inside the plugin resource', function () {
     $plugin = app(PluginManager::class)->discover()[0];
     $plugin->update(['enabled' => true]);
