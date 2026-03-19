@@ -580,6 +580,63 @@ it('can rediscover a forgotten registry row without treating it as uninstall cle
     expect($rediscovered->last_cleanup_mode)->toBeNull();
 });
 
+it('supports plugin lifecycle commands from the host', function () {
+    Storage::fake('local');
+
+    app(PluginManager::class)->discover();
+    Storage::disk('local')->put('plugin-reports/epg-repair/cli-cleanup.csv', 'report');
+
+    $this->artisan('plugins:uninstall', [
+        'pluginId' => 'epg-repair',
+        '--cleanup' => 'preserve',
+    ])->assertSuccessful()
+        ->expectsOutputToContain('uninstalled with cleanup mode [preserve]');
+
+    expect(app(PluginManager::class)->findPluginById('epg-repair')?->isInstalled())->toBeFalse();
+    expect(Storage::disk('local')->exists('plugin-reports/epg-repair/cli-cleanup.csv'))->toBeTrue();
+
+    $this->artisan('plugins:reinstall', [
+        'pluginId' => 'epg-repair',
+    ])->assertSuccessful()
+        ->expectsOutputToContain('Plugin [epg-repair] reinstalled.');
+
+    expect(app(PluginManager::class)->findPluginById('epg-repair')?->isInstalled())->toBeTrue();
+
+    $this->artisan('plugins:forget', [
+        'pluginId' => 'epg-repair',
+    ])->assertSuccessful()
+        ->expectsOutputToContain('registry record deleted');
+
+    expect(ExtensionPlugin::query()->where('plugin_id', 'epg-repair')->exists())->toBeFalse();
+    expect(Storage::disk('local')->exists('plugin-reports/epg-repair/cli-cleanup.csv'))->toBeTrue();
+});
+
+it('reports plugin registry health through the doctor command', function () {
+    Storage::fake('local');
+
+    $plugin = app(PluginManager::class)->discover()[0];
+
+    $this->artisan('plugins:doctor')
+        ->assertSuccessful()
+        ->expectsOutputToContain('Plugin registry looks healthy.');
+
+    $plugin->update([
+        'installation_status' => 'uninstalled',
+        'last_cleanup_mode' => 'purge',
+        'data_ownership' => [
+            'tables' => [],
+            'directories' => ['plugin-reports/epg-repair'],
+            'files' => [],
+            'default_cleanup_policy' => 'preserve',
+        ],
+    ]);
+    Storage::disk('local')->put('plugin-reports/epg-repair/orphan.csv', 'report');
+
+    $this->artisan('plugins:doctor')
+        ->assertSuccessful()
+        ->expectsOutputToContain('still exists after a purge uninstall');
+});
+
 it('loads a plugin run detail page inside the plugin resource', function () {
     $plugin = app(PluginManager::class)->discover()[0];
     $plugin->update(['enabled' => true]);

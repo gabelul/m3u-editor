@@ -186,7 +186,25 @@ Supported schema field types:
 - `php artisan plugins:discover`
 - `php artisan plugins:validate`
 - `php artisan plugins:validate epg-repair`
+- `php artisan plugins:doctor`
+- `php artisan plugins:uninstall epg-repair --cleanup=preserve`
+- `php artisan plugins:reinstall epg-repair`
+- `php artisan plugins:forget epg-repair`
 - `php artisan plugins:run-scheduled`
+
+## Host Operations
+
+The host now exposes plugin lifecycle operations both in the UI and in Artisan.
+
+- `plugins:doctor`: checks registry integrity, lifecycle state drift, and leftover plugin-owned resources after purge uninstall
+- `plugins:uninstall`: marks the plugin uninstalled and optionally preserves or purges declared plugin-owned data
+- `plugins:reinstall`: returns an uninstalled plugin to the installed state so it can be enabled again
+- `plugins:forget`: removes only the registry row, saved settings, and run history
+
+Operational rule:
+
+- use `forget` only when you intentionally want discovery to recreate the plugin later from disk
+- use `uninstall` when you want lifecycle state and cleanup semantics
 
 ## Admin Workflow
 

@@ -15,6 +15,7 @@ class ValidatePlugins extends Command
     public function handle(PluginManager $pluginManager): int
     {
         $pluginId = $this->argument('pluginId');
+        $pluginManager->discover();
         $plugins = ExtensionPlugin::query()
             ->when($pluginId, fn ($query) => $query->where('plugin_id', $pluginId))
             ->get();

@@ -100,6 +100,13 @@ class PluginManager
         return $plugin->fresh();
     }
 
+    public function findPluginById(string $pluginId): ?ExtensionPlugin
+    {
+        return ExtensionPlugin::query()
+            ->where('plugin_id', $pluginId)
+            ->first();
+    }
+
     public function resolvedSettings(ExtensionPlugin $plugin): array
     {
         return $this->schemaMapper->defaultsForFields(
@@ -283,6 +290,15 @@ class PluginManager
         return $plugin->fresh();
     }
 
+    public function forgetRegistryRecord(ExtensionPlugin $plugin): void
+    {
+        if ($plugin->hasActiveRuns()) {
+            throw new RuntimeException('Cannot forget a plugin registry record while it still has active runs.');
+        }
+
+        $plugin->delete();
+    }
+
     public function reinstall(ExtensionPlugin $plugin): ExtensionPlugin
     {
         $plugin->update([
@@ -410,6 +426,92 @@ class PluginManager
         }
 
         return array_values(array_unique($paths));
+    }
+
+    public function registryDiagnostics(): array
+    {
+        $issues = [];
+        $pluginPaths = collect($this->pluginPaths());
+        $registryPlugins = ExtensionPlugin::query()->get();
+
+        foreach ($registryPlugins as $plugin) {
+            if ($plugin->enabled && ! $plugin->isInstalled()) {
+                $issues[] = [
+                    'plugin_id' => $plugin->plugin_id,
+                    'level' => 'error',
+                    'code' => 'enabled_uninstalled',
+                    'message' => 'Plugin is enabled but marked uninstalled.',
+                ];
+            }
+
+            if ($plugin->enabled && ! $plugin->available) {
+                $issues[] = [
+                    'plugin_id' => $plugin->plugin_id,
+                    'level' => 'error',
+                    'code' => 'enabled_missing_files',
+                    'message' => 'Plugin is enabled but its files are not available on disk.',
+                ];
+            }
+
+            if ($plugin->enabled && $plugin->validation_status !== 'valid') {
+                $issues[] = [
+                    'plugin_id' => $plugin->plugin_id,
+                    'level' => 'warning',
+                    'code' => 'enabled_invalid',
+                    'message' => 'Plugin is enabled even though validation is not currently valid.',
+                ];
+            }
+
+            if (($plugin->last_cleanup_mode ?? null) === 'purge') {
+                $ownership = $plugin->data_ownership ?? [];
+
+                foreach ($ownership['directories'] ?? [] as $directory) {
+                    if (Storage::disk('local')->exists($directory)) {
+                        $issues[] = [
+                            'plugin_id' => $plugin->plugin_id,
+                            'level' => 'warning',
+                            'code' => 'purged_directory_still_exists',
+                            'message' => "Declared plugin-owned directory [{$directory}] still exists after a purge uninstall.",
+                        ];
+                    }
+                }
+
+                foreach ($ownership['files'] ?? [] as $file) {
+                    if (Storage::disk('local')->exists($file)) {
+                        $issues[] = [
+                            'plugin_id' => $plugin->plugin_id,
+                            'level' => 'warning',
+                            'code' => 'purged_file_still_exists',
+                            'message' => "Declared plugin-owned file [{$file}] still exists after a purge uninstall.",
+                        ];
+                    }
+                }
+
+                foreach ($ownership['tables'] ?? [] as $table) {
+                    if (Schema::hasTable($table)) {
+                        $issues[] = [
+                            'plugin_id' => $plugin->plugin_id,
+                            'level' => 'warning',
+                            'code' => 'purged_table_still_exists',
+                            'message' => "Declared plugin-owned table [{$table}] still exists after a purge uninstall.",
+                        ];
+                    }
+                }
+            }
+        }
+
+        foreach ($pluginPaths as $pluginPath) {
+            if (! $registryPlugins->contains(fn (ExtensionPlugin $plugin) => $plugin->path === $pluginPath)) {
+                $issues[] = [
+                    'plugin_id' => basename($pluginPath),
+                    'level' => 'info',
+                    'code' => 'missing_registry_record',
+                    'message' => 'Local plugin exists on disk but has not been discovered into the registry yet.',
+                ];
+            }
+        }
+
+        return $issues;
     }
 
     private function ownershipForPlugin(ExtensionPlugin $plugin): array
