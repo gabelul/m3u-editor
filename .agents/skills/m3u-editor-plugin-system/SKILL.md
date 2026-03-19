@@ -42,8 +42,10 @@ If the task touches run review or evidence UX, also read:
 
 - Plugins extend published capabilities. Do not couple plugin authors to random internal services.
 - Manifest validation is mandatory before enablement.
+- Discovery does not imply trust. Admin trust + verified integrity are required before execution.
 - Long-running work must execute through queued plugin invocations.
 - Plugin-owned tables, files, and directories must be declared in `data_ownership`.
+- Plugin-owned tables should also be declared in `schema.tables`; raw plugin migrations are not part of this fork contract.
 - `disable`, `uninstall`, and `forget` are different operations. Do not blur them.
 - Uninstall cleanup must only touch declared plugin-owned resources.
 - If you add plugin-owned persistence, make sure purge uninstall removes it cleanly.
@@ -52,6 +54,7 @@ If the task touches run review or evidence UX, also read:
 
 - Discovery scans `plugins/<plugin-id>/` and syncs manifests into `extension_plugins`.
 - Validation gates execution. Invalid plugins should never be treated as runnable.
+- Trust and integrity gate execution separately from validation.
 - Enable and disable are currently operator-facing UI actions in Filament, not dedicated Artisan commands.
 - Manual actions, hooks, and schedules all produce persisted plugin runs with logs, heartbeats, and results.
 
@@ -80,6 +83,8 @@ After plugin-kernel or plugin changes, run the host checks in this order:
 php artisan make:plugin "Acme XML Tools"
 php artisan plugins:discover
 php artisan plugins:validate
+php artisan plugins:verify-integrity
+php artisan plugins:trust epg-repair
 php artisan plugins:doctor
 php artisan test tests/Feature/PluginSystemTest.php
 ```
@@ -93,6 +98,9 @@ Use these commands and preserve their meanings:
 ```bash
 php artisan plugins:discover
 php artisan plugins:validate epg-repair
+php artisan plugins:verify-integrity epg-repair
+php artisan plugins:trust epg-repair
+php artisan plugins:block epg-repair
 php artisan plugins:uninstall epg-repair --cleanup=preserve
 php artisan plugins:uninstall epg-repair --cleanup=purge
 php artisan plugins:reinstall epg-repair
@@ -104,6 +112,8 @@ php artisan plugins:recover-stale-runs --minutes=15
 Rules:
 
 - `Disable`: plugin remains installed but does not execute
+- `Trust`: admin review step that pins the current file hashes
+- `Block`: admin stop-switch that disables execution until trust is restored
 - `Uninstall`: lifecycle transition with preserve-or-purge cleanup
 - `Forget`: registry cleanup only; files remain on disk and discovery can re-register the plugin
 - `Recover stale runs`: marks interrupted runs stale when heartbeat has stopped beyond the configured threshold
