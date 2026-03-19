@@ -1,0 +1,4 @@
+interface:
+  display_name: "m3u-editor Plugin System"
+  short_description: "Work on the local plugin kernel, lifecycle, validation, and reference plugins"
+  default_prompt: "Use the repo-local m3u-editor plugin system skill. Read PLUGIN_DEV.md and the plugin kernel files first, then implement or review the requested plugin-system change with lifecycle safety and validation."
