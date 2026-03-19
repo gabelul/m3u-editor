@@ -266,6 +266,16 @@ class Channel extends Model
 
     public function fetchMetadata($xtream = null, $refresh = false, bool $skipTmdb = false)
     {
+        if (! $this->is_vod) {
+            return false;
+        }
+
+        // Custom channels should not fetch metadata
+        if ($this->is_custom) {
+            // Return true to indicate that we "succeeded" in fetching metadata, even though we intentionally did not fetch anything
+            return true;
+        }
+
         try {
             $playlist = $this->playlist;
 
@@ -291,9 +301,7 @@ class Channel extends Model
 
                 return false;
             }
-            if (! $this->is_vod) {
-                return false;
-            }
+
             $movieData = $xtream->getVodInfo($this->source_id, timeout: 60);
             $releaseDate = $movieData['info']['release_date'] ?? null;
             $releaseDateAlt = $movieData['info']['releasedate'] ?? null;
@@ -309,7 +317,7 @@ class Channel extends Model
                 try {
                     $date = new \DateTime($dateToParse);
                     $year = (int) $date->format('Y');
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     Log::warning("Unable to parse release date \"{$dateToParse}\" for VOD {$this->id}");
                 }
             }
@@ -331,7 +339,7 @@ class Channel extends Model
             }
 
             return true;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('Failed to fetch metadata for VOD '.$this->id, ['exception' => $e]);
         }
 
