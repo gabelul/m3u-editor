@@ -6,6 +6,7 @@ use App\Enums\Status;
 use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
+use App\Models\ExtensionPluginRun;
 use App\Models\Playlist;
 use App\Plugins\Contracts\EpgRepairPluginInterface;
 use App\Plugins\Contracts\HookablePluginInterface;
@@ -45,6 +46,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         return match ($action) {
             'scan' => $this->scan($payload, $context, false),
             'apply' => $this->apply($payload, $context),
+            'apply_reviewed' => $this->applyReviewed($payload, $context),
             default => PluginActionResult::failure("Unsupported action [{$action}]"),
         };
     }
@@ -251,6 +253,157 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             "Applied {$applied} EPG repair(s).",
             [
                 'dry_run' => false,
+                ...$this->resultSnapshot($report),
+            ],
+        );
+    }
+
+    private function applyReviewed(array $payload, PluginExecutionContext $context): PluginActionResult
+    {
+        $sourceRunId = (int) ($payload['source_run_id'] ?? 0);
+        $sourceRun = $sourceRunId > 0
+            ? ExtensionPluginRun::query()
+                ->where('extension_plugin_id', $context->plugin->id)
+                ->find($sourceRunId)
+            : null;
+
+        if (! $sourceRun || $sourceRun->action !== 'scan' || $sourceRun->status !== 'completed') {
+            return PluginActionResult::failure('A completed scan run is required before reviewed repairs can be applied.');
+        }
+
+        $sourceData = data_get($sourceRun->result, 'data', []);
+        $approved = collect(data_get($sourceData, 'review.decisions', []))
+            ->filter(fn (array $decision): bool => ($decision['status'] ?? null) === 'approved')
+            ->map(fn (array $decision) => $decision['item'] ?? null)
+            ->filter(fn ($item): bool => is_array($item) && filled($item['suggested_epg_channel_id'] ?? null))
+            ->values();
+
+        if ($approved->isEmpty()) {
+            return PluginActionResult::failure('No approved repair candidates were found on the selected scan run.');
+        }
+
+        $playlist = data_get($sourceData, 'playlist');
+        $epg = data_get($sourceData, 'epg');
+
+        $context->info('Starting Apply Reviewed run.', [
+            'source_run_id' => $sourceRun->id,
+            'approved_candidates' => $approved->count(),
+            'playlist_id' => data_get($playlist, 'id'),
+            'epg_id' => data_get($epg, 'id'),
+        ]);
+
+        $checkpoint = $this->prepareReportState($context, [
+            'mode' => 'apply_reviewed',
+            'playlist_id' => data_get($playlist, 'id'),
+            'epg_id' => data_get($epg, 'id'),
+            'source_scope' => data_get($sourceData, 'source_scope', 'selected_only'),
+            'total_channels' => $approved->count(),
+            'epg_channels_available' => 0,
+            'compared_epg_sources' => (int) data_get($sourceData, 'totals.compared_epg_sources', 1),
+            'cross_source_candidates' => 0,
+            'last_channel_id' => null,
+            'channels_scanned' => 0,
+            'issues_found' => $approved->count(),
+            'repair_candidates' => $approved->count(),
+            'repairs_applied' => 0,
+            'channels_with_existing_programmes' => 0,
+            'detailed_apply_logs' => 0,
+            'preview_channels' => [],
+            'preview_truncated' => false,
+            'issue_breakdown' => [],
+            'decision_breakdown' => [],
+            'confidence_breakdown' => [],
+            'apply_outcome_breakdown' => [],
+            'report_path' => null,
+            'report_filename' => null,
+            'report_rows_written' => 0,
+        ], 'apply-reviewed');
+
+        $appliedChannels = [];
+
+        foreach ($approved as $item) {
+            $checkpoint['channels_scanned']++;
+            $checkpoint['last_channel_id'] = $item['channel_id'];
+            $checkpoint['channels_with_existing_programmes'] += filled($item['current_epg_channel_id']) ? 1 : 0;
+
+            $channel = Channel::query()->with(['epgChannel.epg'])->find($item['channel_id']);
+            $applyOutcome = 'preview_only';
+
+            if (! $channel) {
+                $applyOutcome = 'channel_missing';
+            } elseif (! $this->isReviewStillCurrent($channel, $item)) {
+                $applyOutcome = 'stale_review';
+            } elseif (! EpgChannel::query()->whereKey($item['suggested_epg_channel_id'])->exists()) {
+                $applyOutcome = 'suggested_channel_missing';
+            } else {
+                Channel::query()
+                    ->whereKey($channel->id)
+                    ->update([
+                        'epg_channel_id' => $item['suggested_epg_channel_id'],
+                    ]);
+
+                $applyOutcome = 'applied';
+                $checkpoint['repairs_applied']++;
+                $appliedChannels[(string) $item['channel_id']] = $applyOutcome;
+            }
+
+            $item['applied'] = $applyOutcome === 'applied';
+            $item['apply_outcome'] = $applyOutcome;
+
+            $this->recordPreviewItem($checkpoint, $item);
+            $this->incrementBreakdown($checkpoint, 'issue_breakdown', $item['issue'] ?? 'reviewed_candidate');
+            $this->incrementBreakdown($checkpoint, 'decision_breakdown', $item['decision'] ?? 'reviewed_candidate');
+            $this->incrementBreakdown($checkpoint, 'confidence_breakdown', $item['confidence_band'] ?? 'none');
+            $this->incrementBreakdown($checkpoint, 'apply_outcome_breakdown', $applyOutcome);
+            $this->appendReportRow($checkpoint, $item);
+
+            if ($applyOutcome === 'applied') {
+                $context->info('Applied approved repair candidate.', [
+                    'channel_id' => $item['channel_id'],
+                    'channel_name' => $item['channel_name'] ?? null,
+                    'suggested_epg_channel_id' => $item['suggested_epg_channel_id'],
+                ]);
+            }
+        }
+
+        $this->syncSourceReviewStatuses($sourceRun, $appliedChannels, $context->run->id);
+
+        $report = [
+            'playlist' => $playlist,
+            'epg' => $epg,
+            'progress' => 100,
+            'totals' => [
+                'channels_scanned' => $checkpoint['channels_scanned'],
+                'issues_found' => $checkpoint['issues_found'],
+                'repair_candidates' => $checkpoint['repair_candidates'],
+                'repairs_applied' => $checkpoint['repairs_applied'],
+                'epg_channels_available' => $checkpoint['epg_channels_available'],
+                'channels_with_existing_programmes' => $checkpoint['channels_with_existing_programmes'],
+                'compared_epg_sources' => $checkpoint['compared_epg_sources'],
+                'cross_source_candidates' => $checkpoint['cross_source_candidates'],
+            ],
+            'issue_breakdown' => $checkpoint['issue_breakdown'],
+            'decision_breakdown' => $checkpoint['decision_breakdown'],
+            'confidence_breakdown' => $checkpoint['confidence_breakdown'],
+            'apply_outcome_breakdown' => $checkpoint['apply_outcome_breakdown'],
+            'channels' => $checkpoint['preview_channels'],
+            'source_scope' => $checkpoint['source_scope'],
+            'report' => [
+                'path' => $checkpoint['report_path'],
+                'filename' => $checkpoint['report_filename'],
+                'rows_written' => $checkpoint['report_rows_written'],
+            ],
+        ];
+
+        return PluginActionResult::success(
+            sprintf(
+                'Applied %d reviewed repair(s) from scan #%d.',
+                $checkpoint['repairs_applied'],
+                $sourceRun->id,
+            ),
+            [
+                'dry_run' => false,
+                'source_run_id' => $sourceRun->id,
                 ...$this->resultSnapshot($report),
             ],
         );
@@ -532,6 +685,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'apply_outcome_breakdown' => $checkpoint['apply_outcome_breakdown'],
             'channels' => $checkpoint['preview_channels'],
             'source_scope' => $checkpoint['source_scope'],
+            'review' => $this->initialReviewState($checkpoint['preview_channels']),
             'report' => [
                 'path' => $checkpoint['report_path'],
                 'filename' => $checkpoint['report_filename'],
@@ -785,6 +939,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
     {
         $channels = $report['channels'] ?? [];
         $preview = array_slice($channels, 0, self::MAX_RESULT_CHANNELS);
+        $review = $report['review'] ?? $this->initialReviewState($preview);
 
         return [
             'progress' => $report['progress'] ?? 100,
@@ -800,7 +955,25 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'channels_preview_count' => count($preview),
             'channels_total_count' => data_get($report, 'totals.issues_found', count($channels)),
             'channels_truncated' => (bool) data_get($report, 'totals.issues_found', count($channels)) > count($preview),
+            'review' => $review,
             'report' => $report['report'] ?? null,
+        ];
+    }
+
+    private function initialReviewState(array $previewChannels): array
+    {
+        $pending = collect($previewChannels)
+            ->filter(fn (array $item): bool => (bool) ($item['repairable'] ?? false) && filled($item['suggested_epg_channel_id'] ?? null))
+            ->count();
+
+        return [
+            'decisions' => [],
+            'counts' => [
+                'approved' => 0,
+                'rejected' => 0,
+                'applied' => 0,
+                'pending' => $pending,
+            ],
         ];
     }
 
@@ -838,6 +1011,67 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
 
             return;
         }
+    }
+
+    private function isReviewStillCurrent(Channel $channel, array $item): bool
+    {
+        $currentSourceId = $channel->epgChannel?->epg_id;
+
+        return (int) ($channel->epg_channel_id ?? 0) === (int) ($item['current_epg_channel_id'] ?? 0)
+            && (int) ($currentSourceId ?? 0) === (int) ($item['current_epg_source_id'] ?? 0);
+    }
+
+    private function syncSourceReviewStatuses(ExtensionPluginRun $sourceRun, array $appliedChannels, int $applyRunId): void
+    {
+        if ($appliedChannels === []) {
+            return;
+        }
+
+        $result = $sourceRun->result ?? [];
+        $data = $result['data'] ?? [];
+        $review = $data['review'] ?? $this->initialReviewState($data['channels_preview'] ?? []);
+        $decisions = $review['decisions'] ?? [];
+
+        foreach ($appliedChannels as $channelId => $applyOutcome) {
+            if (! isset($decisions[$channelId])) {
+                continue;
+            }
+
+            $decisions[$channelId]['status'] = $applyOutcome === 'applied' ? 'applied' : $decisions[$channelId]['status'];
+            $decisions[$channelId]['last_apply_outcome'] = $applyOutcome;
+            $decisions[$channelId]['last_apply_run_id'] = $applyRunId;
+            $decisions[$channelId]['updated_at'] = now()->toIso8601String();
+        }
+
+        $counts = [
+            'approved' => 0,
+            'rejected' => 0,
+            'applied' => 0,
+            'pending' => 0,
+        ];
+
+        $reviewableIds = collect($data['channels_preview'] ?? [])
+            ->filter(fn (array $item): bool => (bool) ($item['repairable'] ?? false) && filled($item['suggested_epg_channel_id'] ?? null))
+            ->pluck('channel_id')
+            ->map(fn (mixed $id): string => (string) $id)
+            ->all();
+
+        foreach ($reviewableIds as $channelId) {
+            $status = data_get($decisions, $channelId.'.status', 'pending');
+            if (! array_key_exists($status, $counts)) {
+                $status = 'pending';
+            }
+
+            $counts[$status]++;
+        }
+
+        $review['decisions'] = $decisions;
+        $review['counts'] = $counts;
+        $review['updated_at'] = now()->toIso8601String();
+        $data['review'] = $review;
+        $result['data'] = $data;
+
+        $sourceRun->forceFill(['result' => $result])->save();
     }
 
     private function emptyMatchInsight(): array

@@ -30,6 +30,10 @@
         $applyScope = data_get($run->payload, 'apply_scope');
         $allowSourceSwitch = data_get($run->payload, 'allow_source_switch');
         $maxRepairs = data_get($run->payload, 'max_repairs');
+        $reviewData = data_get($resultData, 'review', []);
+        $reviewDecisions = data_get($reviewData, 'decisions', []);
+        $reviewCounts = data_get($reviewData, 'counts', []);
+        $reviewableRun = $this->isReviewableScanRun();
     @endphp
 
     <div class="space-y-6">
@@ -237,12 +241,28 @@
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div>
                         <h2 class="text-sm font-semibold text-gray-950 dark:text-white">Channel evidence</h2>
-                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">A preview of exactly what the plugin found and what it wanted to do.</p>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                            @if($reviewableRun)
+                                Review visible candidates here, approve the ones you trust, then use <span class="font-medium text-gray-700 dark:text-gray-200">Apply Reviewed</span>.
+                            @else
+                                A preview of exactly what the plugin found and what it wanted to do.
+                            @endif
+                        </p>
                     </div>
                     <div class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">
                         Showing {{ count($previewChannels) }} of {{ number_format((int) data_get($resultData, 'channels_total_count', count($previewChannels))) }}
                     </div>
                 </div>
+
+                @if($reviewableRun)
+                    <div class="mt-4 flex flex-wrap gap-2">
+                        @foreach(['approved' => 'bg-success-50 text-success-700 dark:bg-success-950/40 dark:text-success-300', 'rejected' => 'bg-danger-50 text-danger-700 dark:bg-danger-950/40 dark:text-danger-300', 'applied' => 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300', 'pending' => 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200'] as $bucket => $classes)
+                            <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium {{ $classes }}">
+                                {{ \Illuminate\Support\Str::headline($bucket) }} · {{ (int) ($reviewCounts[$bucket] ?? 0) }}
+                            </span>
+                        @endforeach
+                    </div>
+                @endif
 
                 @if($previewChannels !== [])
                     <div class="mt-5 overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-800">
@@ -255,10 +275,18 @@
                                         <th class="px-4 py-3">Current mapping</th>
                                         <th class="px-4 py-3">Suggested mapping</th>
                                         <th class="px-4 py-3">Decision</th>
+                                        @if($reviewableRun)
+                                            <th class="px-4 py-3">Review</th>
+                                        @endif
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
                                     @foreach($previewChannels as $item)
+                                        @php
+                                            $reviewDecision = $reviewDecisions[(string) data_get($item, 'channel_id')] ?? null;
+                                            $reviewStatus = data_get($reviewDecision, 'status', 'pending');
+                                            $canReviewItem = $reviewableRun && data_get($item, 'repairable') && filled(data_get($item, 'suggested_epg_channel_id'));
+                                        @endphp
                                         <tr class="align-top">
                                             <td class="px-4 py-4">
                                                 <div class="font-medium text-gray-950 dark:text-white">{{ data_get($item, 'channel_name', 'Unknown channel') }}</div>
@@ -315,6 +343,55 @@
                                                     </div>
                                                 @endif
                                             </td>
+                                            @if($reviewableRun)
+                                                <td class="px-4 py-4">
+                                                    <div class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium
+                                                        @if($reviewStatus === 'approved') bg-success-50 text-success-700 dark:bg-success-950/40 dark:text-success-300
+                                                        @elseif($reviewStatus === 'rejected') bg-danger-50 text-danger-700 dark:bg-danger-950/40 dark:text-danger-300
+                                                        @elseif($reviewStatus === 'applied') bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300
+                                                        @else bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200 @endif">
+                                                        {{ \Illuminate\Support\Str::headline((string) $reviewStatus) }}
+                                                    </div>
+
+                                                    @if($canReviewItem && $reviewStatus !== 'applied')
+                                                        <div class="mt-3 flex flex-wrap gap-2">
+                                                            <button
+                                                                type="button"
+                                                                wire:click="markReviewDecision({{ (int) data_get($item, 'channel_id') }}, 'approved')"
+                                                                class="inline-flex items-center rounded-full bg-success-50 px-3 py-1.5 text-xs font-medium text-success-700 transition hover:bg-success-100 dark:bg-success-950/40 dark:text-success-300"
+                                                            >
+                                                                Approve
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                wire:click="markReviewDecision({{ (int) data_get($item, 'channel_id') }}, 'rejected')"
+                                                                class="inline-flex items-center rounded-full bg-danger-50 px-3 py-1.5 text-xs font-medium text-danger-700 transition hover:bg-danger-100 dark:bg-danger-950/40 dark:text-danger-300"
+                                                            >
+                                                                Reject
+                                                            </button>
+                                                            @if($reviewStatus !== 'pending')
+                                                                <button
+                                                                    type="button"
+                                                                    wire:click="markReviewDecision({{ (int) data_get($item, 'channel_id') }}, 'pending')"
+                                                                    class="inline-flex items-center rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200"
+                                                                >
+                                                                    Reset
+                                                                </button>
+                                                            @endif
+                                                        </div>
+                                                    @elseif(! $canReviewItem)
+                                                        <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                                            This candidate cannot be reviewed from the preview table.
+                                                        </div>
+                                                    @endif
+
+                                                    @if(filled(data_get($reviewDecision, 'user_name')))
+                                                        <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                                            {{ data_get($reviewDecision, 'user_name') }} · {{ data_get($reviewDecision, 'updated_at') }}
+                                                        </div>
+                                                    @endif
+                                                </td>
+                                            @endif
                                         </tr>
                                     @endforeach
                                 </tbody>
@@ -322,7 +399,7 @@
                         </div>
                     </div>
                     @if(data_get($resultData, 'channels_truncated'))
-                        <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">The preview is truncated. Use the CSV report to inspect the full set of affected channels.</p>
+                        <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">The preview is truncated. Use the CSV report to inspect the full set of affected channels. Only visible preview candidates can be reviewed from this screen right now.</p>
                     @endif
                     @if($applyOutcomeBreakdown !== [])
                         <div class="mt-4 flex flex-wrap gap-2">

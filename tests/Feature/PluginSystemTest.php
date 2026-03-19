@@ -401,6 +401,104 @@ it('blocks source switching during apply unless explicitly allowed', function ()
     expect(data_get($applyRun->result, 'data.channels_preview.0.apply_outcome'))->toBe('source_switch_blocked');
 });
 
+it('lets operators review visible candidates before applying reviewed repairs', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::factory()->create([
+        'permissions' => ['use_tools'],
+    ]);
+
+    $playlist = Playlist::create([
+        'name' => 'Reviewed Apply Playlist',
+        'uuid' => (string) Str::uuid(),
+        'url' => 'http://example.test/reviewed-apply.m3u',
+        'status' => Status::Completed,
+        'prefix' => 'reviewed',
+        'channels' => 1,
+        'synced' => now(),
+        'id_channel_by' => 'stream_id',
+        'user_id' => $user->id,
+    ]);
+
+    $epg = Epg::create([
+        'name' => 'Reviewed Apply EPG',
+        'url' => 'http://example.test/reviewed-apply.xml',
+        'user_id' => $user->id,
+        'status' => Status::Completed,
+    ]);
+
+    $epgChannel = EpgChannel::create([
+        'name' => 'Discovery Channel HD',
+        'display_name' => 'Discovery Channel HD',
+        'lang' => 'en',
+        'channel_id' => 'discovery-channel-hd',
+        'epg_id' => $epg->id,
+        'user_id' => $user->id,
+    ]);
+
+    $channel = Channel::create([
+        'name' => 'Discovery Channel HD',
+        'title' => 'Discovery Channel HD',
+        'enabled' => true,
+        'channel' => 7,
+        'shift' => 0,
+        'url' => 'http://stream.example.test/discovery.ts',
+        'logo' => '',
+        'group' => 'Docs',
+        'stream_id' => 'reviewed-1',
+        'lang' => 'en',
+        'country' => 'US',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'is_vod' => false,
+        'epg_channel_id' => null,
+    ]);
+
+    $scanRun = $pluginManager->executeAction($plugin->fresh(), 'scan', [
+        'playlist_id' => $playlist->id,
+        'epg_id' => $epg->id,
+        'hours_ahead' => 12,
+        'confidence_threshold' => 0.6,
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'user_id' => $user->id,
+    ]);
+
+    $this->actingAs($user);
+
+    Livewire::test(ViewPluginRun::class, [
+        'record' => $plugin->id,
+        'run' => $scanRun->id,
+    ])->call('markReviewDecision', $channel->id, 'approved');
+
+    $scanRun->refresh();
+
+    expect(data_get($scanRun->result, 'data.review.counts.approved'))->toBe(1);
+    expect(data_get($scanRun->result, 'data.review.counts.pending'))->toBe(0);
+    expect(data_get($scanRun->result, 'data.review.decisions.'.$channel->id.'.status'))->toBe('approved');
+
+    $applyReviewedRun = $pluginManager->executeAction($plugin->fresh(), 'apply_reviewed', [
+        'source_run_id' => $scanRun->id,
+    ], [
+        'trigger' => 'manual',
+        'dry_run' => false,
+        'user_id' => $user->id,
+    ]);
+
+    $channel->refresh();
+    $scanRun->refresh();
+
+    expect($applyReviewedRun->status)->toBe('completed');
+    expect($channel->epg_channel_id)->toBe($epgChannel->id);
+    expect(data_get($applyReviewedRun->result, 'data.totals.repairs_applied'))->toBe(1);
+    expect(data_get($applyReviewedRun->result, 'data.apply_outcome_breakdown.applied'))->toBe(1);
+    expect(data_get($scanRun->result, 'data.review.decisions.'.$channel->id.'.status'))->toBe('applied');
+});
+
 it('prefills plugin action fields from saved settings when declared', function () {
     $plugin = app(PluginManager::class)->discover()[0];
 

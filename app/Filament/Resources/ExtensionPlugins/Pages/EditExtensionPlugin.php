@@ -84,7 +84,7 @@ class EditExtensionPlugin extends EditRecord
 
         foreach ($record->actions ?? [] as $pluginAction) {
             $actionId = $pluginAction['id'] ?? null;
-            if (! $actionId) {
+            if (! $actionId || ($pluginAction['hidden'] ?? false)) {
                 continue;
             }
 

@@ -184,6 +184,22 @@
           "helper_text": "Caps how many repairs can be applied in a single run. Use 0 for no limit."
         }
       ]
+    },
+    {
+      "id": "apply_reviewed",
+      "label": "Apply Reviewed Repairs",
+      "requires_confirmation": true,
+      "destructive": true,
+      "hidden": true,
+      "fields": [
+        {
+          "id": "source_run_id",
+          "label": "Source Scan Run",
+          "type": "number",
+          "required": true,
+          "helper_text": "Internal action used from the scan run review screen."
+        }
+      ]
     }
   ]
 }
