@@ -72,4 +72,9 @@ Schedule::command('plugins:run-scheduled')
     ->everyMinute()
     ->withoutOverlapping();
 
+// Mark abandoned plugin runs stale so operators can resume them.
+Schedule::command('plugins:recover-stale-runs --minutes=15')
+    ->everyMinute()
+    ->withoutOverlapping();
+
 // Note: HLS broadcast files are managed by m3u-proxy service

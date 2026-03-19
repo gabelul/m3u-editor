@@ -22,17 +22,32 @@ class ExtensionPluginRun extends Model
         'status',
         'payload',
         'result',
+        'run_state',
         'summary',
+        'progress',
+        'progress_message',
         'started_at',
         'finished_at',
+        'last_heartbeat_at',
+        'cancel_requested',
+        'cancel_requested_at',
+        'cancelled_at',
+        'stale_at',
     ];
 
     protected $casts = [
         'payload' => 'array',
         'result' => 'array',
+        'run_state' => 'array',
         'dry_run' => 'boolean',
+        'progress' => 'integer',
         'started_at' => 'datetime',
         'finished_at' => 'datetime',
+        'last_heartbeat_at' => 'datetime',
+        'cancel_requested' => 'boolean',
+        'cancel_requested_at' => 'datetime',
+        'cancelled_at' => 'datetime',
+        'stale_at' => 'datetime',
     ];
 
     public function plugin(): BelongsTo
@@ -48,5 +63,14 @@ class ExtensionPluginRun extends Model
     public function logs(): HasMany
     {
         return $this->hasMany(ExtensionPluginRunLog::class)->latest();
+    }
+
+    public function isStale(int $minutes = 15): bool
+    {
+        if ($this->status !== 'running' || ! $this->last_heartbeat_at) {
+            return false;
+        }
+
+        return $this->last_heartbeat_at->lt(now()->subMinutes($minutes));
     }
 }

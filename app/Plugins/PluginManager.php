@@ -120,14 +120,16 @@ class PluginManager
         array $payload = [],
         array $options = [],
     ): ExtensionPluginRun {
-        $run = $this->startRun($plugin, [
+        $this->recoverStaleRuns();
+
+        $run = $this->prepareRun($plugin, [
             'trigger' => $options['trigger'] ?? 'manual',
             'invocation_type' => 'action',
             'action' => $action,
             'payload' => $payload,
             'dry_run' => (bool) ($options['dry_run'] ?? false),
             'user_id' => $options['user_id'] ?? null,
-        ]);
+        ], $options);
 
         try {
             Validator::make($payload, $this->schemaMapper->actionRules($plugin, $action))->validate();
@@ -157,14 +159,16 @@ class PluginManager
         array $payload = [],
         array $options = [],
     ): ExtensionPluginRun {
-        $run = $this->startRun($plugin, [
+        $this->recoverStaleRuns();
+
+        $run = $this->prepareRun($plugin, [
             'trigger' => $options['trigger'] ?? 'hook',
             'invocation_type' => 'hook',
             'hook' => $hook,
             'payload' => $payload,
             'dry_run' => (bool) ($options['dry_run'] ?? true),
             'user_id' => $options['user_id'] ?? null,
-        ]);
+        ], $options);
 
         try {
             $instance = $this->instantiate($plugin);
@@ -230,6 +234,105 @@ class PluginManager
         return $instance;
     }
 
+    public function requestCancellation(ExtensionPluginRun $run, ?int $userId = null): ExtensionPluginRun
+    {
+        if ($run->status !== 'running') {
+            return $run->fresh();
+        }
+
+        $run->logs()->create([
+            'level' => 'warning',
+            'message' => 'Cancellation requested by operator.',
+            'context' => [
+                'user_id' => $userId,
+            ],
+        ]);
+
+        $run->update([
+            'cancel_requested' => true,
+            'cancel_requested_at' => now(),
+            'last_heartbeat_at' => now(),
+            'progress_message' => 'Cancellation requested. Waiting for the worker to stop cleanly.',
+        ]);
+
+        return $run->fresh();
+    }
+
+    public function resumeRun(ExtensionPluginRun $run, ?int $userId = null): ExtensionPluginRun
+    {
+        $plugin = $run->plugin()->firstOrFail();
+
+        if (! in_array($run->status, ['cancelled', 'stale', 'failed'], true)) {
+            return $run->fresh();
+        }
+
+        dispatch(new \App\Jobs\ExecutePluginInvocation(
+            pluginId: $plugin->id,
+            invocationType: $run->invocation_type,
+            name: $run->action ?? $run->hook ?? throw new RuntimeException('Run cannot be resumed without an action or hook name.'),
+            payload: $run->payload ?? [],
+            options: [
+                'trigger' => $run->trigger,
+                'dry_run' => $run->dry_run,
+                'user_id' => $userId ?? $run->user_id,
+                'existing_run_id' => $run->id,
+                'resume' => true,
+            ],
+        ));
+
+        return $run->fresh();
+    }
+
+    public function recoverStaleRuns(int $minutes = 15): int
+    {
+        $staleRuns = ExtensionPluginRun::query()
+            ->where('status', 'running')
+            ->where(function ($query) use ($minutes) {
+                $query
+                    ->where(function ($heartbeatQuery) use ($minutes) {
+                        $heartbeatQuery
+                            ->whereNotNull('last_heartbeat_at')
+                            ->where('last_heartbeat_at', '<', now()->subMinutes($minutes));
+                    })
+                    ->orWhere(function ($legacyQuery) use ($minutes) {
+                        $legacyQuery
+                            ->whereNull('last_heartbeat_at')
+                            ->whereNotNull('started_at')
+                            ->where('started_at', '<', now()->subMinutes($minutes));
+                    });
+            })
+            ->get();
+
+        foreach ($staleRuns as $run) {
+            $summary = $run->progress_message ?: $run->summary ?: 'Run lost its heartbeat and was marked stale.';
+
+            $run->logs()->create([
+                'level' => 'warning',
+                'message' => 'Run heartbeat expired. Marking the run as stale so an operator can resume or rerun it.',
+                'context' => [
+                    'last_heartbeat_at' => optional($run->last_heartbeat_at)->toDateTimeString(),
+                ],
+            ]);
+
+            $run->update([
+                'status' => 'stale',
+                'summary' => $summary,
+                'stale_at' => now(),
+                'finished_at' => $run->finished_at ?? now(),
+                'result' => [
+                    'status' => 'stale',
+                    'success' => false,
+                    'summary' => $summary,
+                    'data' => [
+                        'run_state' => $run->run_state ?? [],
+                    ],
+                ],
+            ]);
+        }
+
+        return $staleRuns->count();
+    }
+
     private function pluginPaths(): array
     {
         $paths = [];
@@ -249,11 +352,56 @@ class PluginManager
         return array_values(array_unique($paths));
     }
 
+    private function prepareRun(ExtensionPlugin $plugin, array $attributes, array $options = []): ExtensionPluginRun
+    {
+        $existingRunId = $options['existing_run_id'] ?? null;
+
+        if (! $existingRunId) {
+            return $this->startRun($plugin, $attributes);
+        }
+
+        $run = ExtensionPluginRun::query()
+            ->where('extension_plugin_id', $plugin->id)
+            ->findOrFail($existingRunId);
+
+        $resumeMessage = ($options['resume'] ?? false)
+            ? 'Run resumed from its last saved checkpoint.'
+            : ($run->summary ?: 'Run restarted.');
+
+        $run->logs()->create([
+            'level' => 'info',
+            'message' => $resumeMessage,
+            'context' => [
+                'resume' => (bool) ($options['resume'] ?? false),
+            ],
+        ]);
+
+        $run->update([
+            ...$attributes,
+            'status' => 'running',
+            'summary' => $resumeMessage,
+            'result' => null,
+            'progress_message' => $resumeMessage,
+            'cancel_requested' => false,
+            'cancel_requested_at' => null,
+            'cancelled_at' => null,
+            'stale_at' => null,
+            'finished_at' => null,
+            'last_heartbeat_at' => now(),
+            'started_at' => $run->started_at ?? now(),
+        ]);
+
+        return $run->fresh();
+    }
+
     private function startRun(ExtensionPlugin $plugin, array $attributes): ExtensionPluginRun
     {
         return $plugin->runs()->create([
             ...$attributes,
             'status' => 'running',
+            'progress' => 0,
+            'progress_message' => 'Run queued and waiting for the worker to start.',
+            'last_heartbeat_at' => now(),
             'started_at' => now(),
         ]);
     }
@@ -269,9 +417,16 @@ class PluginManager
         ]);
 
         $run->update([
-            'status' => $result->success ? 'completed' : 'failed',
+            'status' => $result->status,
             'result' => $result->toArray(),
             'summary' => $result->summary,
+            'progress' => (int) data_get($result->data, 'progress', $result->status === 'completed' ? 100 : $run->progress),
+            'progress_message' => $result->summary,
+            'last_heartbeat_at' => now(),
+            'cancel_requested' => false,
+            'cancel_requested_at' => null,
+            'cancelled_at' => $result->status === 'cancelled' ? now() : null,
+            'run_state' => in_array($result->status, ['cancelled', 'stale'], true) ? $run->run_state : null,
             'finished_at' => now(),
         ]);
 
@@ -289,7 +444,10 @@ class PluginManager
         $run->update([
             'status' => 'failed',
             'summary' => $message,
+            'progress_message' => $message,
+            'last_heartbeat_at' => now(),
             'result' => [
+                'status' => 'failed',
                 'success' => false,
                 'summary' => $message,
                 'data' => [],

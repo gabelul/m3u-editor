@@ -79,6 +79,8 @@ class RunsRelationManager extends RelationManager
                                 'completed' => 'success',
                                 'failed' => 'danger',
                                 'running' => 'warning',
+                                'stale' => 'warning',
+                                'cancelled' => 'gray',
                                 default => 'gray',
                             }),
                         TextColumn::make('trigger')
@@ -123,6 +125,8 @@ class RunsRelationManager extends RelationManager
                         'running' => 'Running',
                         'completed' => 'Completed',
                         'failed' => 'Failed',
+                        'stale' => 'Stale',
+                        'cancelled' => 'Cancelled',
                     ]),
                 SelectFilter::make('trigger')
                     ->options([
@@ -161,7 +165,7 @@ class RunsRelationManager extends RelationManager
             ->count();
         $failedCount = ExtensionPluginRun::query()
             ->where('extension_plugin_id', $pluginId)
-            ->where('status', 'failed')
+            ->whereIn('status', ['failed', 'stale', 'cancelled'])
             ->count();
         $manualCount = ExtensionPluginRun::query()
             ->where('extension_plugin_id', $pluginId)

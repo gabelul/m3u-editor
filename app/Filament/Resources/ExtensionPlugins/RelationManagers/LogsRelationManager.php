@@ -71,6 +71,8 @@ class LogsRelationManager extends RelationManager
                                 'completed' => 'success',
                                 'failed' => 'danger',
                                 'running' => 'warning',
+                                'stale' => 'warning',
+                                'cancelled' => 'gray',
                                 default => 'gray',
                             })
                             ->url(fn (ExtensionPluginRunLog $record): ?string => $record->run

@@ -12,7 +12,9 @@ use App\Models\User;
 use App\Filament\Resources\ExtensionPlugins\Pages\ViewPluginRun;
 use App\Plugins\PluginManager;
 use App\Plugins\PluginSchemaMapper;
+use App\Jobs\ExecutePluginInvocation;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
 
@@ -111,11 +113,17 @@ it('scans and applies epg repairs through the plugin manager', function () {
     ]);
 
     expect($scanRun->status)->toBe('completed');
-    expect(data_get($scanRun->result, 'data.channels'))->toHaveCount(1);
-    expect(data_get($scanRun->result, 'data.channels.0.issue'))->toBe('unmapped');
-    expect(data_get($scanRun->result, 'data.channels.0.suggested_epg_channel_id'))->toBe($epgChannel->id);
-    expect(data_get($scanRun->result, 'data.channels.0.repairable'))->toBeTrue();
+    expect(data_get($scanRun->result, 'data.channels_preview'))->toHaveCount(1);
+    expect(data_get($scanRun->result, 'data.channels_preview.0.issue'))->toBe('unmapped');
+    expect(data_get($scanRun->result, 'data.channels_preview.0.suggested_epg_channel_id'))->toBe($epgChannel->id);
+    expect(data_get($scanRun->result, 'data.channels_preview.0.repairable'))->toBeTrue();
+    expect(data_get($scanRun->result, 'data.channels_total_count'))->toBe(1);
+    expect(data_get($scanRun->result, 'data.channels_truncated'))->toBeFalse();
     expect(data_get($scanRun->result, 'data.totals.epg_channels_available'))->toBe(1);
+    expect($scanRun->progress)->toBe(100);
+    expect(data_get($scanRun->result, 'status'))->toBe('completed');
+    expect($scanRun->last_heartbeat_at)->not->toBeNull();
+    expect($scanRun->run_state)->toBeNull();
     expect($scanRun->logs()->count())->toBeGreaterThanOrEqual(2);
     expect($scanRun->logs()->pluck('message')->join(' '))->toContain('Starting EPG Repair scan.');
 
@@ -131,6 +139,9 @@ it('scans and applies epg repairs through the plugin manager', function () {
     ]);
 
     expect($applyRun->status)->toBe('completed');
+    expect($applyRun->progress)->toBe(100);
+    expect($applyRun->last_heartbeat_at)->not->toBeNull();
+    expect($applyRun->run_state)->toBeNull();
 
     $channel->refresh();
 
@@ -245,4 +256,75 @@ it('loads a plugin run detail page inside the plugin resource', function () {
         ->assertOk()
         ->assertSee('Plugin run started.')
         ->assertSee('Queued for inspection.');
+});
+
+it('marks stale runs, supports cancellation requests, and queues resume for stale runs', function () {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->discover()[0];
+    $plugin->update(['enabled' => true]);
+
+    $user = User::factory()->create([
+        'permissions' => ['use_tools'],
+    ]);
+
+    $staleRun = ExtensionPluginRun::query()->create([
+        'extension_plugin_id' => $plugin->id,
+        'user_id' => $user->id,
+        'status' => 'running',
+        'invocation_type' => 'action',
+        'action' => 'scan',
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'payload' => ['playlist_id' => 123],
+        'progress' => 42,
+        'progress_message' => 'Still working through checkpoint 3.',
+        'last_heartbeat_at' => now()->subMinutes(20),
+        'started_at' => now()->subMinutes(25),
+        'run_state' => [
+            'epg_repair' => [
+                'last_channel_id' => 999,
+                'channels_scanned' => 420,
+            ],
+        ],
+    ]);
+
+    expect($pluginManager->recoverStaleRuns())->toBe(1);
+
+    $staleRun->refresh();
+
+    expect($staleRun->status)->toBe('stale');
+    expect($staleRun->stale_at)->not->toBeNull();
+    expect(data_get($staleRun->result, 'status'))->toBe('stale');
+
+    $runningRun = ExtensionPluginRun::query()->create([
+        'extension_plugin_id' => $plugin->id,
+        'user_id' => $user->id,
+        'status' => 'running',
+        'invocation_type' => 'action',
+        'action' => 'scan',
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'payload' => ['playlist_id' => 456],
+        'started_at' => now(),
+        'last_heartbeat_at' => now(),
+    ]);
+
+    $pluginManager->requestCancellation($runningRun, $user->id);
+    $runningRun->refresh();
+
+    expect($runningRun->cancel_requested)->toBeTrue();
+    expect($runningRun->cancel_requested_at)->not->toBeNull();
+    expect($runningRun->progress_message)->toContain('Cancellation requested');
+
+    Queue::fake();
+
+    $pluginManager->resumeRun($staleRun, $user->id);
+
+    Queue::assertPushed(ExecutePluginInvocation::class, function (ExecutePluginInvocation $job) use ($plugin, $staleRun, $user) {
+        return $job->pluginId === $plugin->id
+            && $job->invocationType === 'action'
+            && $job->name === 'scan'
+            && $job->options['existing_run_id'] === $staleRun->id
+            && $job->options['user_id'] === $user->id;
+    });
 });

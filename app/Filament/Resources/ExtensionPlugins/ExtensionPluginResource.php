@@ -528,6 +528,8 @@ class ExtensionPluginResource extends Resource
             'completed' => '<span class="inline-flex items-center rounded-full border border-success-200 bg-success-50 px-3 py-1.5 text-xs font-semibold text-success-700 dark:border-success-800 dark:bg-success-950/40 dark:text-success-300">Last run completed</span>',
             'failed' => '<span class="inline-flex items-center rounded-full border border-danger-200 bg-danger-50 px-3 py-1.5 text-xs font-semibold text-danger-700 dark:border-danger-800 dark:bg-danger-950/40 dark:text-danger-300">Last run failed</span>',
             'running' => '<span class="inline-flex items-center rounded-full border border-warning-200 bg-warning-50 px-3 py-1.5 text-xs font-semibold text-warning-700 dark:border-warning-800 dark:bg-warning-950/40 dark:text-warning-300">Run in progress</span>',
+            'stale' => '<span class="inline-flex items-center rounded-full border border-warning-200 bg-warning-50 px-3 py-1.5 text-xs font-semibold text-warning-700 dark:border-warning-800 dark:bg-warning-950/40 dark:text-warning-300">Run went stale</span>',
+            'cancelled' => '<span class="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">Run cancelled</span>',
             default => self::mutedBadge(Str::headline($run->status)),
         };
     }

@@ -12,6 +12,13 @@ class ListExtensionPlugins extends ListRecords
 {
     protected static string $resource = ExtensionPluginResource::class;
 
+    public function mount(): void
+    {
+        parent::mount();
+
+        app(PluginManager::class)->recoverStaleRuns();
+    }
+
     protected function getHeaderActions(): array
     {
         return [

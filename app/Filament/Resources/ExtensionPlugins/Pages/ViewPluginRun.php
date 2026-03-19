@@ -5,7 +5,9 @@ namespace App\Filament\Resources\ExtensionPlugins\Pages;
 use App\Filament\Resources\ExtensionPlugins\ExtensionPluginResource;
 use App\Models\ExtensionPlugin;
 use App\Models\ExtensionPluginRun;
+use App\Plugins\PluginManager;
 use Filament\Actions\Action;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -26,6 +28,8 @@ class ViewPluginRun extends Page
 
     public function mount(int|string $record, int|string $run): void
     {
+        app(PluginManager::class)->recoverStaleRuns();
+
         $this->record = $this->resolveRecord($record);
 
         static::authorizeResourceAccess();
@@ -54,6 +58,39 @@ class ViewPluginRun extends Page
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('stop_run')
+                ->label('Stop Run')
+                ->icon('heroicon-o-stop-circle')
+                ->color('warning')
+                ->visible(fn (): bool => $this->runRecord->status === 'running')
+                ->requiresConfirmation()
+                ->action(function (): void {
+                    app(PluginManager::class)->requestCancellation($this->runRecord, auth()->id());
+                    $this->runRecord = $this->runRecord->fresh();
+                    $this->logs = $this->runRecord->logs()->latest()->limit(150)->get()->reverse()->values();
+
+                    Notification::make()
+                        ->success()
+                        ->title('Cancellation requested')
+                        ->body('The worker will stop the run at the next safe checkpoint.')
+                        ->send();
+                }),
+            Action::make('resume_run')
+                ->label('Resume Run')
+                ->icon('heroicon-o-arrow-path')
+                ->color('primary')
+                ->visible(fn (): bool => in_array($this->runRecord->status, ['cancelled', 'stale', 'failed'], true))
+                ->action(function (): void {
+                    app(PluginManager::class)->resumeRun($this->runRecord, auth()->id());
+                    $this->runRecord = $this->runRecord->fresh();
+                    $this->logs = $this->runRecord->logs()->latest()->limit(150)->get()->reverse()->values();
+
+                    Notification::make()
+                        ->success()
+                        ->title('Run resumed')
+                        ->body('The run was queued again and will continue from the last saved checkpoint when possible.')
+                        ->send();
+                }),
             Action::make('back_to_plugin')
                 ->label('Back to Plugin')
                 ->icon('heroicon-o-arrow-left')

@@ -6,11 +6,14 @@
             'completed' => 'bg-success-50 text-success-700 ring-success-200 dark:bg-success-950/40 dark:text-success-300 dark:ring-success-800',
             'failed' => 'bg-danger-50 text-danger-700 ring-danger-200 dark:bg-danger-950/40 dark:text-danger-300 dark:ring-danger-800',
             'running' => 'bg-warning-50 text-warning-700 ring-warning-200 dark:bg-warning-950/40 dark:text-warning-300 dark:ring-warning-800',
+            'cancelled' => 'bg-gray-100 text-gray-700 ring-gray-200 dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800',
+            'stale' => 'bg-warning-50 text-warning-700 ring-warning-200 dark:bg-warning-950/40 dark:text-warning-300 dark:ring-warning-800',
         ];
         $statusClass = $statusColors[$run->status] ?? 'bg-gray-50 text-gray-700 ring-gray-200 dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800';
         $payload = json_encode($run->payload ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         $result = json_encode($run->result ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         $latestMessage = $this->logs->last()?->message;
+        $progress = (int) ($run->progress ?? 0);
     @endphp
 
     <div class="space-y-6">
@@ -49,8 +52,11 @@
                         </div>
                         <div class="rounded-2xl border border-gray-200 bg-white/80 p-4 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
                             <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current signal</div>
-                            <div class="mt-2 text-sm font-medium text-gray-950 dark:text-white">{{ $latestMessage ?: 'Waiting for activity…' }}</div>
-                            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">The latest emitted activity line from this job.</div>
+                            <div class="mt-2 text-sm font-medium text-gray-950 dark:text-white">{{ $run->progress_message ?: ($latestMessage ?: 'Waiting for activity…') }}</div>
+                            <div class="mt-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                                <div class="h-full rounded-full bg-primary-500 transition-all" style="width: {{ max(2, $progress) }}%"></div>
+                            </div>
+                            <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ $progress }}% checkpointed progress. The bar advances when the worker writes a heartbeat or saves a checkpoint.</div>
                         </div>
                         <div class="rounded-2xl border border-gray-200 bg-white/80 p-4 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
                             <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Queued by</div>
@@ -79,6 +85,10 @@
                             <div>
                                 <dt class="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500">Invocation</dt>
                                 <dd class="mt-1 font-medium text-gray-950 dark:text-white">{{ \Illuminate\Support\Str::headline($run->invocation_type) }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500">Last heartbeat</dt>
+                                <dd class="mt-1 font-medium text-gray-950 dark:text-white">{{ optional($run->last_heartbeat_at)->toDateTimeString() ?? 'No heartbeat yet' }}</dd>
                             </div>
                         </dl>
                     </div>

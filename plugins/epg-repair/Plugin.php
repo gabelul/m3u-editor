@@ -21,6 +21,14 @@ use Illuminate\Support\Collection;
 
 class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, ScheduledPluginInterface
 {
+    private const SCAN_CHUNK_SIZE = 250;
+
+    private const CHECKPOINT_EVERY_CHUNKS = 5;
+
+    private const MAX_DETAILED_APPLY_LOGS = 25;
+
+    private const MAX_RESULT_CHANNELS = 50;
+
     public function __construct(
         private readonly SimilaritySearchService $similaritySearch,
         private readonly ChannelTitleNormalizerService $normalizer,
@@ -117,7 +125,14 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'dry_run' => $context->dryRun || $implicitDryRun,
         ]);
 
-        $issues = $this->buildRepairReport($playlist, $epg, $hoursAhead, $threshold);
+        [$issues, $cancelled] = $this->processRepairStream(
+            playlist: $playlist,
+            epg: $epg,
+            hoursAhead: $hoursAhead,
+            threshold: $threshold,
+            context: $context,
+            applyRepairs: false,
+        );
 
         if ($issues['totals']['channels_scanned'] === 0) {
             $context->warning('Scan found no enabled live channels in the selected playlist.', [
@@ -134,6 +149,19 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             ]);
         }
 
+        if ($cancelled) {
+            return PluginActionResult::cancelled(
+                sprintf(
+                    'Scan stopped after checking %d channels. Resume the run to continue from the last saved checkpoint.',
+                    $issues['totals']['channels_scanned'],
+                ),
+                [
+                    'dry_run' => $context->dryRun || $implicitDryRun,
+                    ...$this->resultSnapshot($issues),
+                ],
+            );
+        }
+
         $summary = $issues['totals']['channels_scanned'] === 0
             ? 'Scanned 0 channels. The selected playlist currently has no enabled live channels to inspect.'
             : sprintf(
@@ -146,7 +174,7 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             $summary,
             [
                 'dry_run' => $context->dryRun || $implicitDryRun,
-                ...$issues,
+                ...$this->resultSnapshot($issues),
             ],
         );
     }
@@ -174,31 +202,28 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
             'confidence_threshold' => $threshold,
         ]);
 
-        $report = $this->buildRepairReport($playlist, $epg, $hoursAhead, $threshold);
-        $applied = 0;
+        [$report, $cancelled] = $this->processRepairStream(
+            playlist: $playlist,
+            epg: $epg,
+            hoursAhead: $hoursAhead,
+            threshold: $threshold,
+            context: $context,
+            applyRepairs: true,
+        );
 
-        foreach ($report['channels'] as $item) {
-            if (($item['repairable'] ?? false) !== true) {
-                continue;
-            }
+        $applied = $report['totals']['repairs_applied'] ?? 0;
 
-            Channel::query()
-                ->whereKey($item['channel_id'])
-                ->update([
-                    'epg_channel_id' => $item['suggested_epg_channel_id'],
-                ]);
-
-            $context->info('Applied EPG repair to channel.', [
-                'channel_id' => $item['channel_id'],
-                'channel_name' => $item['channel_name'],
-                'suggested_epg_channel_id' => $item['suggested_epg_channel_id'],
-                'suggested_epg_channel_name' => $item['suggested_epg_channel_name'],
-                'confidence' => $item['confidence'],
-            ]);
-            $applied++;
+        if ($cancelled) {
+            return PluginActionResult::cancelled(
+                "Apply stopped after {$applied} EPG repair(s). Resume the run to continue from the last saved checkpoint.",
+                [
+                    'dry_run' => false,
+                    ...$this->resultSnapshot($report),
+                ],
+            );
         }
 
-        if ($applied === 0) {
+        if (($report['totals']['repairs_applied'] ?? 0) === 0) {
             $context->warning('Apply finished with no repairs applied.', [
                 'issues_found' => $report['totals']['issues_found'],
                 'repair_candidates' => $report['totals']['repair_candidates'],
@@ -208,67 +233,192 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         return PluginActionResult::success(
             "Applied {$applied} EPG repair(s).",
             [
-                ...$report,
                 'dry_run' => false,
-                'totals' => [
-                    ...$report['totals'],
-                    'repairs_applied' => $applied,
-                ],
+                ...$this->resultSnapshot($report),
             ],
         );
     }
 
-    private function buildRepairReport(Playlist $playlist, Epg $epg, int $hoursAhead, float $threshold): array
+    private function processRepairStream(
+        Playlist $playlist,
+        Epg $epg,
+        int $hoursAhead,
+        float $threshold,
+        PluginExecutionContext $context,
+        bool $applyRepairs,
+    ): array
     {
-        $channels = $playlist->enabled_live_channels()
-            ->with(['epgChannel'])
-            ->get();
+        $mode = $applyRepairs ? 'apply' : 'scan';
+        $totalChannels = (int) $playlist->enabled_live_channels()->count();
+        $epgChannelsAvailable = (int) $epg->channels()->count();
+        $checkpoint = $this->initialCheckpointState(
+            playlist: $playlist,
+            epg: $epg,
+            hoursAhead: $hoursAhead,
+            threshold: $threshold,
+            totalChannels: $totalChannels,
+            epgChannelsAvailable: $epgChannelsAvailable,
+            context: $context,
+            mode: $mode,
+        );
 
         $start = Carbon::now();
         $end = $start->copy()->addHours($hoursAhead);
+        $chunkNumber = 0;
+        $detailedApplyLogs = (int) ($checkpoint['detailed_apply_logs'] ?? 0);
+        $cancelled = false;
 
-        $mappedChannelIds = $channels
-            ->filter(fn (Channel $channel) => $channel->epgChannel?->epg_id === $epg->id && filled($channel->epgChannel?->channel_id))
-            ->map(fn (Channel $channel) => $channel->epgChannel->channel_id)
-            ->unique()
-            ->values()
-            ->all();
+        $query = $playlist->enabled_live_channels()
+            ->with(['epgChannel'])
+            ->orderBy('channels.id');
 
-        $programmes = $mappedChannelIds === []
-            ? []
-            : $this->cacheService->getCachedProgrammesRange(
-                $epg,
-                $start->toDateString(),
-                $end->toDateString(),
-                $mappedChannelIds,
-            );
+        if (($checkpoint['last_channel_id'] ?? null) !== null) {
+            $query->where('channels.id', '>', $checkpoint['last_channel_id']);
+        }
 
-        /** @var Collection<int, EpgChannel> $epgChannels */
-        $epgChannels = $epg->channels()->get();
+        $query->chunkById(self::SCAN_CHUNK_SIZE, function (Collection $channels) use (
+            $applyRepairs,
+            $context,
+            $epg,
+            $end,
+            &$cancelled,
+            &$checkpoint,
+            &$chunkNumber,
+            &$detailedApplyLogs,
+            $start,
+            $threshold
+        ): bool {
+            if ($context->cancellationRequested()) {
+                $cancelled = true;
+                $context->checkpoint(
+                    progress: $this->progressPercent($checkpoint['channels_scanned'], $checkpoint['total_channels']),
+                    message: 'Cancellation requested. Saving the last safe checkpoint.',
+                    state: ['epg_repair' => $checkpoint],
+                    log: true,
+                );
 
-        $results = $channels->map(function (Channel $channel) use ($epg, $epgChannels, $programmes, $threshold) {
-            $issue = $this->detectIssue($channel, $epg, $programmes);
-            if (! $issue) {
-                return null;
+                return false;
             }
 
-            $suggested = $this->similaritySearch->findMatchingEpgChannel($channel, $epg);
-            $confidence = $suggested ? $this->confidenceScore($channel, $suggested) : null;
-            $repairable = $suggested !== null && $confidence !== null && $confidence >= $threshold;
+            $chunkNumber++;
 
-            return [
-                'channel_id' => $channel->id,
-                'channel_name' => $channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name,
-                'issue' => $issue,
-                'current_epg_channel_id' => $channel->epg_channel_id,
-                'suggested_epg_channel_id' => $suggested?->id,
-                'suggested_epg_channel_name' => $suggested?->display_name ?? $suggested?->name ?? $suggested?->channel_id,
-                'confidence' => $confidence,
-                'repairable' => $repairable,
-            ];
-        })->filter()->values();
+            $mappedChannelIds = $channels
+                ->filter(fn (Channel $channel) => $channel->epgChannel?->epg_id === $epg->id && filled($channel->epgChannel?->channel_id))
+                ->map(fn (Channel $channel) => $channel->epgChannel->channel_id)
+                ->unique()
+                ->values()
+                ->all();
 
-        return [
+            $programmes = $mappedChannelIds === []
+                ? []
+                : $this->cacheService->getCachedProgrammesRange(
+                    $epg,
+                    $start->toDateString(),
+                    $end->toDateString(),
+                    $mappedChannelIds,
+                );
+
+            foreach ($channels as $channel) {
+                $checkpoint['channels_scanned']++;
+                $checkpoint['last_channel_id'] = $channel->id;
+
+                if ($channel->epgChannel?->epg_id === $epg->id && filled($channel->epgChannel?->channel_id)) {
+                    $checkpoint['channels_with_existing_programmes']++;
+                }
+
+                $issue = $this->detectIssue($channel, $epg, $programmes);
+                if (! $issue) {
+                    continue;
+                }
+
+                $checkpoint['issues_found']++;
+
+                $suggested = $this->similaritySearch->findMatchingEpgChannel($channel, $epg);
+                $confidence = $suggested ? $this->confidenceScore($channel, $suggested) : null;
+                $repairable = $suggested !== null && $confidence !== null && $confidence >= $threshold;
+
+                if ($repairable) {
+                    $checkpoint['repair_candidates']++;
+                }
+
+                $item = [
+                    'channel_id' => $channel->id,
+                    'channel_name' => $channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name,
+                    'issue' => $issue,
+                    'current_epg_channel_id' => $channel->epg_channel_id,
+                    'suggested_epg_channel_id' => $suggested?->id,
+                    'suggested_epg_channel_name' => $suggested?->display_name ?? $suggested?->name ?? $suggested?->channel_id,
+                    'confidence' => $confidence,
+                    'repairable' => $repairable,
+                ];
+
+                $checkpoint['channels'][] = $item;
+
+                if (! $applyRepairs || ! $repairable) {
+                    continue;
+                }
+
+                Channel::query()
+                    ->whereKey($channel->id)
+                    ->update([
+                        'epg_channel_id' => $item['suggested_epg_channel_id'],
+                    ]);
+
+                $checkpoint['repairs_applied']++;
+
+                if ($detailedApplyLogs < self::MAX_DETAILED_APPLY_LOGS) {
+                    $context->info('Applied EPG repair to channel.', [
+                        'channel_id' => $item['channel_id'],
+                        'channel_name' => $item['channel_name'],
+                        'suggested_epg_channel_id' => $item['suggested_epg_channel_id'],
+                        'suggested_epg_channel_name' => $item['suggested_epg_channel_name'],
+                        'confidence' => $item['confidence'],
+                    ]);
+                    $detailedApplyLogs++;
+                    $checkpoint['detailed_apply_logs'] = $detailedApplyLogs;
+                }
+            }
+
+            $progress = $this->progressPercent($checkpoint['channels_scanned'], $checkpoint['total_channels']);
+            $state = ['epg_repair' => $checkpoint];
+
+            if ($chunkNumber % self::CHECKPOINT_EVERY_CHUNKS === 0) {
+                $context->checkpoint(
+                    progress: $progress,
+                    message: $this->chunkMessage($applyRepairs, $checkpoint),
+                    state: $state,
+                    log: true,
+                    context: [
+                        'channels_scanned' => $checkpoint['channels_scanned'],
+                        'issues_found' => $checkpoint['issues_found'],
+                        'repair_candidates' => $checkpoint['repair_candidates'],
+                        'repairs_applied' => $checkpoint['repairs_applied'],
+                    ],
+                );
+            } else {
+                $context->heartbeat(
+                    message: $this->chunkMessage($applyRepairs, $checkpoint),
+                    progress: $progress,
+                    state: $state,
+                );
+            }
+
+            if ($context->cancellationRequested()) {
+                $cancelled = true;
+                $context->checkpoint(
+                    progress: $progress,
+                    message: 'Cancellation requested. Saving the last safe checkpoint.',
+                    state: $state,
+                    log: true,
+                );
+
+                return false;
+            }
+
+            return true;
+        }, 'channels.id', 'id');
+
+        return [[
             'playlist' => [
                 'id' => $playlist->id,
                 'name' => $playlist->name,
@@ -277,15 +427,17 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
                 'id' => $epg->id,
                 'name' => $epg->name,
             ],
-            'channels' => $results->all(),
+            'progress' => $cancelled ? $this->progressPercent($checkpoint['channels_scanned'], $checkpoint['total_channels']) : 100,
+            'channels' => $checkpoint['channels'],
             'totals' => [
-                'channels_scanned' => $channels->count(),
-                'issues_found' => $results->count(),
-                'repair_candidates' => $results->where('repairable', true)->count(),
-                'epg_channels_available' => $epgChannels->count(),
-                'channels_with_existing_programmes' => count($mappedChannelIds),
+                'channels_scanned' => $checkpoint['channels_scanned'],
+                'issues_found' => $checkpoint['issues_found'],
+                'repair_candidates' => $checkpoint['repair_candidates'],
+                'repairs_applied' => $checkpoint['repairs_applied'],
+                'epg_channels_available' => $checkpoint['epg_channels_available'],
+                'channels_with_existing_programmes' => $checkpoint['channels_with_existing_programmes'],
             ],
-        ];
+        ], $cancelled];
     }
 
     private function resolveTargets(array $payload, array $settings): array
@@ -315,6 +467,94 @@ class Plugin implements EpgRepairPluginInterface, HookablePluginInterface, Sched
         }
 
         return null;
+    }
+
+    private function initialCheckpointState(
+        Playlist $playlist,
+        Epg $epg,
+        int $hoursAhead,
+        float $threshold,
+        int $totalChannels,
+        int $epgChannelsAvailable,
+        PluginExecutionContext $context,
+        string $mode,
+    ): array {
+        $state = $context->state('epg_repair', []);
+
+        $canResume = ($state['mode'] ?? null) === $mode
+            && ($state['playlist_id'] ?? null) === $playlist->id
+            && ($state['epg_id'] ?? null) === $epg->id
+            && (int) ($state['hours_ahead'] ?? 0) === $hoursAhead
+            && (float) ($state['confidence_threshold'] ?? 0) === $threshold;
+
+        if (! $canResume) {
+            return [
+                'mode' => $mode,
+                'playlist_id' => $playlist->id,
+                'epg_id' => $epg->id,
+                'hours_ahead' => $hoursAhead,
+                'confidence_threshold' => $threshold,
+                'total_channels' => $totalChannels,
+                'epg_channels_available' => $epgChannelsAvailable,
+                'last_channel_id' => null,
+                'channels_scanned' => 0,
+                'issues_found' => 0,
+                'repair_candidates' => 0,
+                'repairs_applied' => 0,
+                'channels_with_existing_programmes' => 0,
+                'detailed_apply_logs' => 0,
+                'channels' => [],
+            ];
+        }
+
+        $state['total_channels'] = $totalChannels;
+        $state['epg_channels_available'] = $epgChannelsAvailable;
+        $state['channels'] = $state['channels'] ?? [];
+        $state['repairs_applied'] = (int) ($state['repairs_applied'] ?? 0);
+        $state['detailed_apply_logs'] = (int) ($state['detailed_apply_logs'] ?? 0);
+
+        return $state;
+    }
+
+    private function chunkMessage(bool $applyRepairs, array $checkpoint): string
+    {
+        $prefix = $applyRepairs ? 'Applying repairs' : 'Scanning channels';
+
+        return sprintf(
+            '%s: %d/%d channels checked, %d issue(s), %d repair candidate(s), %d applied.',
+            $prefix,
+            $checkpoint['channels_scanned'],
+            $checkpoint['total_channels'],
+            $checkpoint['issues_found'],
+            $checkpoint['repair_candidates'],
+            $checkpoint['repairs_applied'],
+        );
+    }
+
+    private function progressPercent(int $processed, int $total): int
+    {
+        if ($total <= 0) {
+            return 100;
+        }
+
+        return min(99, (int) floor(($processed / $total) * 100));
+    }
+
+    private function resultSnapshot(array $report): array
+    {
+        $channels = $report['channels'] ?? [];
+        $preview = array_slice($channels, 0, self::MAX_RESULT_CHANNELS);
+
+        return [
+            'progress' => $report['progress'] ?? 100,
+            'playlist' => $report['playlist'] ?? null,
+            'epg' => $report['epg'] ?? null,
+            'totals' => $report['totals'] ?? [],
+            'channels_preview' => $preview,
+            'channels_preview_count' => count($preview),
+            'channels_total_count' => count($channels),
+            'channels_truncated' => count($channels) > count($preview),
+        ];
     }
 
     private function confidenceScore(Channel $channel, EpgChannel $epgChannel): ?float

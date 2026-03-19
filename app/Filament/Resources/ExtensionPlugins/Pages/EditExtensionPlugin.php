@@ -17,6 +17,13 @@ class EditExtensionPlugin extends EditRecord
 {
     protected static string $resource = ExtensionPluginResource::class;
 
+    public function mount(int|string $record): void
+    {
+        app(PluginManager::class)->recoverStaleRuns();
+
+        parent::mount($record);
+    }
+
     public function getSubheading(): ?string
     {
         return 'Monitor this plugin, queue one-off jobs, and tune the defaults that automation will reuse.';
