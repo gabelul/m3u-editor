@@ -1,11 +1,14 @@
 # Plugin System
 
 `m3u-editor` now ships with a trusted-local plugin kernel for extension work on this fork.
+Normal use should go through the reviewed-install flow for private local plugins or archives.
 
 ## Principles
 
 - Plugins extend published capabilities instead of reaching into arbitrary internals.
-- Discovery is local and explicit. V1 does not support ZIP upload or remote install.
+- Discovery is local and explicit.
+- Normal mode supports reviewed local directories and reviewed archives.
+- Dev mode keeps direct folder discovery for plugin authors.
 - Long-running work runs through queued invocations.
 - Validation happens before a plugin can be trusted.
 - Trust is explicit. Discovery does not imply trust.
@@ -42,6 +45,13 @@ The scaffold creates:
 - `plugins/<plugin-id>/Plugin.php`
 
 The generated plugin is designed to validate immediately and includes a simple `health_check` action so operators can exercise it right away from `Tools -> Extensions`.
+
+## Install Modes
+
+- `normal`: reviewed local directories and reviewed archives are the supported install path
+- `dev`: keeps direct folder discovery for configured author directories
+
+Self-hosted private plugins do not need dev mode if they go through reviewed install.
 
 ## Manifest
 
@@ -113,6 +123,51 @@ Admin review should check:
 - owned storage paths
 - intended hooks/schedules
 - current file integrity state
+- ClamAV result for reviewed installs
+
+## Reviewed Install Flow
+
+Phase 1 source types:
+
+- `local_directory`
+- `staged_archive`
+- `local_dev`
+
+Typical local-directory review flow:
+
+```bash
+php artisan plugins:stage-directory /absolute/path/to/my-plugin
+php artisan plugins:scan-install <review-id>
+php artisan plugins:approve-install <review-id> --trust
+```
+
+Typical archive review flow:
+
+```bash
+php artisan plugins:stage-archive /absolute/path/to/my-plugin.zip
+php artisan plugins:scan-install <review-id>
+php artisan plugins:approve-install <review-id> --trust
+```
+
+Review statuses:
+
+- `staged`
+- `scanned`
+- `review_ready`
+- `approved`
+- `rejected`
+- `installed`
+- `discarded`
+
+Scan statuses:
+
+- `pending`
+- `clean`
+- `infected`
+- `scan_failed`
+- `scanner_unavailable`
+
+ClamAV is required to trust reviewed installs in normal mode.
 
 ## Lifecycle
 
@@ -290,6 +345,12 @@ Supported schema field types:
 - `php artisan plugins:discover`
 - `php artisan plugins:validate`
 - `php artisan plugins:validate epg-repair`
+- `php artisan plugins:stage-directory <path>`
+- `php artisan plugins:stage-archive <archive>`
+- `php artisan plugins:scan-install <review-id>`
+- `php artisan plugins:approve-install <review-id> [--trust]`
+- `php artisan plugins:reject-install <review-id>`
+- `php artisan plugins:discard-install <review-id>`
 - `php artisan plugins:verify-integrity`
 - `php artisan plugins:trust epg-repair`
 - `php artisan plugins:block epg-repair`
@@ -319,20 +380,22 @@ Operational rule:
 1. Run plugin discovery.
 2. Open `Tools -> Extensions`.
 3. Validate a plugin.
-4. Review permissions, schema, and integrity.
-5. Trust it.
-6. Configure settings.
-7. Enable it.
-8. Run manual actions or let hooks/schedules invoke it.
-9. If you remove the plugin later, choose whether uninstall should preserve or purge the declared plugin-owned data.
+4. If needed, stage the current plugin files for review or use Install Reviews.
+5. Review permissions, schema, integrity, and ClamAV result.
+6. Trust it.
+7. Configure settings.
+8. Enable it.
+9. Run manual actions or let hooks/schedules invoke it.
+10. If you remove the plugin later, choose whether uninstall should preserve or purge the declared plugin-owned data.
 
 ## Scaffold Workflow
 
 1. Run `php artisan make:plugin "Your Plugin Name"`.
 2. Edit the generated `plugin.json` capabilities, hooks, settings, and ownership declarations.
 3. Replace the generated `health_check` behavior with the real plugin logic in `Plugin.php`.
-4. Run discovery, validation, and trust.
-5. Open `Tools -> Extensions` and test the scaffold from the UI.
+4. Stage it through reviewed install or use dev mode while authoring.
+5. Run discovery, validation, scan, and trust.
+6. Open `Tools -> Extensions` and test the scaffold from the UI.
 
 ## Execution Model
 

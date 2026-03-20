@@ -8,6 +8,7 @@ use App\Models\ExtensionPlugin;
 use App\Models\ExtensionPluginRun;
 use App\Models\ExtensionPluginRunLog;
 use App\Models\Playlist;
+use App\Models\PluginInstallReview;
 use App\Models\PluginEpgRepairScanCandidate;
 use App\Models\User;
 use App\Filament\Resources\ExtensionPlugins\Pages\ViewPluginRun;
@@ -22,6 +23,20 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
 
+beforeEach(function () {
+    config()->set('plugins.clamav.driver', 'fake');
+    config()->set('plugins.install_mode', 'normal');
+});
+
+function approvePluginReviewForTests(string $sourcePath, bool $trust = true, bool $devSource = false): PluginInstallReview
+{
+    $pluginManager = app(PluginManager::class);
+    $review = $pluginManager->stageDirectoryReview($sourcePath, null, $devSource);
+    $review = $pluginManager->scanInstallReview($review);
+
+    return $pluginManager->approveInstallReview($review, $trust);
+}
+
 function discoverPluginForTests(bool $enabled = false): ExtensionPlugin
 {
     $pluginManager = app(PluginManager::class);
@@ -33,8 +48,9 @@ function discoverPluginForTests(bool $enabled = false): ExtensionPlugin
     $plugin = $pluginManager->reinstall($plugin->fresh());
 
     if ($enabled) {
-        $plugin = $pluginManager->trust($plugin->fresh());
-        $plugin->update(['enabled' => true]);
+        approvePluginReviewForTests(base_path('plugins/epg-repair'), true);
+        $plugin = $pluginManager->findPluginById('epg-repair');
+        $plugin?->update(['enabled' => true]);
     }
 
     return $plugin->fresh();
@@ -79,7 +95,10 @@ it('requires admin trust before a plugin becomes runnable', function () {
     expect($plugin->isTrusted())->toBeFalse();
     expect($plugin->hasVerifiedIntegrity())->toBeFalse();
 
-    $trusted = $pluginManager->trust($plugin->fresh());
+    $review = approvePluginReviewForTests(base_path('plugins/epg-repair'), false);
+    expect($review->scan_status)->toBe('clean');
+
+    $trusted = $pluginManager->trust($pluginManager->findPluginById('epg-repair')->fresh());
 
     expect($trusted->isTrusted())->toBeTrue();
     expect($trusted->hasVerifiedIntegrity())->toBeTrue();
@@ -92,8 +111,8 @@ it('requires admin trust before a plugin becomes runnable', function () {
 
 it('downgrades trust when a trusted plugin file changes', function () {
     $pluginManager = app(PluginManager::class);
-    $plugin = discoverPluginForTests();
-    $plugin = $pluginManager->trust($plugin->fresh());
+    approvePluginReviewForTests(base_path('plugins/epg-repair'), true);
+    $plugin = $pluginManager->findPluginById('epg-repair');
 
     $manifestPath = base_path('plugins/epg-repair/plugin.json');
     $originalManifest = File::get($manifestPath);
@@ -784,6 +803,9 @@ it('supports plugin lifecycle commands from the host', function () {
 
 it('supports trust, block, and integrity verification commands from the host', function () {
     $this->artisan('plugins:discover')->assertSuccessful();
+    $review = app(PluginManager::class)->stageDirectoryReview(base_path('plugins/epg-repair'));
+    app(PluginManager::class)->scanInstallReview($review);
+    app(PluginManager::class)->approveInstallReview($review, false);
 
     $this->artisan('plugins:verify-integrity', [
         'pluginId' => 'epg-repair',
@@ -808,12 +830,46 @@ it('supports trust, block, and integrity verification commands from the host', f
     expect(app(PluginManager::class)->findPluginById('epg-repair')?->trust_state)->toBe('blocked');
 });
 
+it('supports the reviewed install command flow for local plugin directories', function () {
+    $this->artisan('plugins:stage-directory', [
+        'path' => base_path('plugins/epg-repair'),
+    ])->assertSuccessful()
+        ->expectsOutputToContain('Created install review');
+
+    $review = PluginInstallReview::query()->latest('id')->first();
+
+    expect($review)->not->toBeNull();
+    expect($review?->plugin_id)->toBe('epg-repair');
+
+    $this->artisan('plugins:scan-install', [
+        'reviewId' => $review->id,
+    ])->assertSuccessful()
+        ->expectsOutputToContain('scan status: clean');
+
+    $this->artisan('plugins:approve-install', [
+        'reviewId' => $review->id,
+        '--trust' => true,
+    ])->assertSuccessful()
+        ->expectsOutputToContain('installed plugin [epg-repair]');
+
+    $plugin = app(PluginManager::class)->findPluginById('epg-repair');
+
+    expect($plugin?->trust_state)->toBe('trusted');
+    expect($plugin?->integrity_status)->toBe('verified');
+});
+
 it('reports plugin registry health through the doctor command', function () {
     Storage::fake('local');
 
     $plugin = collect(app(PluginManager::class)->discover())
         ->firstWhere('plugin_id', 'epg-repair');
     $plugin = app(PluginManager::class)->reinstall($plugin->fresh());
+    app(PluginManager::class)->approveInstallReview(
+        app(PluginManager::class)->scanInstallReview(
+            app(PluginManager::class)->stageDirectoryReview(base_path('plugins/epg-repair'))
+        ),
+        true,
+    );
 
     $this->artisan('plugins:doctor')
         ->assertSuccessful()

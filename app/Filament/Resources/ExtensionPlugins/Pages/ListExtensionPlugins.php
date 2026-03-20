@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\ExtensionPlugins\Pages;
 
 use App\Filament\Resources\ExtensionPlugins\ExtensionPluginResource;
+use App\Filament\Resources\PluginInstallReviews\PluginInstallReviewResource;
 use App\Plugins\PluginManager;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -35,6 +36,11 @@ class ListExtensionPlugins extends ListRecords
                         ->body('Synced '.count($plugins).' plugin(s) into the registry.')
                         ->send();
                 }),
+            Action::make('install_reviews')
+                ->label('Install Reviews')
+                ->icon('heroicon-o-archive-box')
+                ->visible(fn (): bool => auth()->user()?->canManagePlugins() ?? false)
+                ->url(PluginInstallReviewResource::getUrl()),
         ];
     }
 }

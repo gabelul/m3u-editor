@@ -116,7 +116,7 @@ class PluginValidator
 
         if (! file_exists($manifest->entrypointPath())) {
             $errors[] = "Missing entrypoint file [{$manifest->entrypoint}]";
-        } else {
+        } elseif (! class_exists($manifest->className, false)) {
             try {
                 require_once $manifest->entrypointPath();
             } catch (Throwable $exception) {

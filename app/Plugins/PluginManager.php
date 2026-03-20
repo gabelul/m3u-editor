@@ -3,6 +3,7 @@
 namespace App\Plugins;
 
 use App\Models\ExtensionPlugin;
+use App\Models\PluginInstallReview;
 use App\Models\ExtensionPluginRun;
 use App\Models\User;
 use App\Plugins\Contracts\HookablePluginInterface;
@@ -15,12 +16,15 @@ use App\Plugins\Support\PluginUninstallContext;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use PharData;
 use RuntimeException;
 use Throwable;
+use ZipArchive;
 
 class PluginManager
 {
@@ -30,6 +34,7 @@ class PluginManager
         private readonly PluginManifestLoader $manifestLoader,
         private readonly PluginIntegrityService $integrityService,
         private readonly PluginSchemaManager $schemaManager,
+        private readonly PluginMalwareScanner $malwareScanner,
     ) {}
 
     public function discover(): array
@@ -60,7 +65,7 @@ class PluginManager
                 'settings_schema' => $manifest?->settings ?? Arr::get($result->manifestData, 'settings', []),
                 'data_ownership' => $manifest?->dataOwnership ?? Arr::get($result->manifestData, 'data_ownership', []),
                 'path' => $pluginPath,
-                'source_type' => 'local',
+                'source_type' => $this->determineSourceType($pluginPath, $record),
                 'available' => true,
                 'validation_status' => $result->valid ? 'valid' : 'invalid',
                 'validation_errors' => $result->errors,
@@ -146,6 +151,230 @@ class PluginManager
         return ExtensionPlugin::query()
             ->where('plugin_id', $pluginId)
             ->first();
+    }
+
+    public function findInstallReviewById(int $reviewId): ?PluginInstallReview
+    {
+        return PluginInstallReview::query()->find($reviewId);
+    }
+
+    public function stageDirectoryReview(string $sourcePath, ?int $userId = null, bool $devSource = false): PluginInstallReview
+    {
+        $sourcePath = $this->normalizeRealPath($sourcePath);
+        if (! is_dir($sourcePath)) {
+            throw new RuntimeException("Plugin source directory [{$sourcePath}] does not exist.");
+        }
+
+        if (! file_exists($sourcePath.DIRECTORY_SEPARATOR.'plugin.json')) {
+            throw new RuntimeException("Plugin source directory [{$sourcePath}] must contain plugin.json.");
+        }
+
+        $review = PluginInstallReview::query()->create([
+            'source_type' => $devSource ? 'local_dev' : 'local_directory',
+            'source_path' => $sourcePath,
+            'status' => 'staged',
+            'validation_status' => 'pending',
+            'scan_status' => 'pending',
+            'created_by_user_id' => $userId,
+        ]);
+
+        $stagingRoot = $this->reviewStagingRoot($review);
+        $workingPath = $stagingRoot.DIRECTORY_SEPARATOR.'source';
+
+        File::ensureDirectoryExists($workingPath);
+        File::copyDirectory($sourcePath, $workingPath);
+
+        return $this->refreshInstallReview(
+            $review->fresh(),
+            sourcePath: $sourcePath,
+            stagingPath: $stagingRoot,
+            extractedPath: $workingPath,
+        );
+    }
+
+    public function stageArchiveReview(string $archivePath, ?int $userId = null): PluginInstallReview
+    {
+        $archivePath = $this->normalizeRealPath($archivePath);
+        if (! is_file($archivePath)) {
+            throw new RuntimeException("Plugin archive [{$archivePath}] does not exist.");
+        }
+
+        $review = PluginInstallReview::query()->create([
+            'source_type' => 'staged_archive',
+            'source_path' => $archivePath,
+            'archive_filename' => basename($archivePath),
+            'status' => 'staged',
+            'validation_status' => 'pending',
+            'scan_status' => 'pending',
+            'created_by_user_id' => $userId,
+        ]);
+
+        $stagingRoot = $this->reviewStagingRoot($review);
+        File::ensureDirectoryExists($stagingRoot);
+
+        $stagedArchivePath = $stagingRoot.DIRECTORY_SEPARATOR.basename($archivePath);
+        File::copy($archivePath, $stagedArchivePath);
+
+        $extractRoot = $stagingRoot.DIRECTORY_SEPARATOR.'extracted';
+        File::ensureDirectoryExists($extractRoot);
+        $pluginPath = $this->extractPluginArchive($stagedArchivePath, $extractRoot);
+
+        return $this->refreshInstallReview(
+            $review->fresh(),
+            sourcePath: $archivePath,
+            stagingPath: $stagingRoot,
+            extractedPath: $pluginPath,
+            archivePath: $stagedArchivePath,
+            archiveFilename: basename($archivePath),
+        );
+    }
+
+    public function scanInstallReview(PluginInstallReview $review): PluginInstallReview
+    {
+        if (! $review->extracted_path || ! is_dir($review->extracted_path)) {
+            throw new RuntimeException('Install review has no extracted plugin payload to scan.');
+        }
+
+        $scan = $this->malwareScanner->scan(
+            $review->extracted_path,
+            $review->archive_path,
+        );
+
+        $status = $review->validation_status === 'valid' ? 'review_ready' : 'staged';
+        if (($scan['status'] ?? null) === 'infected') {
+            $status = 'rejected';
+        }
+
+        $review->update([
+            'scan_status' => $scan['status'] ?? 'scan_failed',
+            'scan_summary' => $scan['summary'] ?? 'Plugin scan failed.',
+            'scan_details' => $scan['details'] ?? [],
+            'scanned_at' => now(),
+            'status' => $status,
+        ]);
+
+        return $review->fresh();
+    }
+
+    public function approveInstallReview(PluginInstallReview $review, bool $trust = false, ?int $userId = null, ?string $notes = null): PluginInstallReview
+    {
+        $review = $this->refreshInstallReview(
+            $review->fresh(),
+            sourcePath: $review->source_path,
+            stagingPath: $review->staging_path,
+            extractedPath: $review->extracted_path,
+            archivePath: $review->archive_path,
+            archiveFilename: $review->archive_filename,
+        );
+
+        if ($review->validation_status !== 'valid') {
+            throw new RuntimeException('Only valid plugin reviews can be approved for install.');
+        }
+
+        if ($this->scanRequiredForReview($review) && $review->scan_status !== 'clean') {
+            throw new RuntimeException('A clean ClamAV scan is required before this install review can be approved for trust.');
+        }
+
+        if (! $review->plugin_id || ! $review->extracted_path) {
+            throw new RuntimeException('Install review is missing plugin metadata or extracted content.');
+        }
+
+        $targetPath = $this->managedPluginDirectory().DIRECTORY_SEPARATOR.$review->plugin_id;
+        $existingPlugin = $this->findPluginById($review->plugin_id);
+        if ($existingPlugin?->hasActiveRuns()) {
+            throw new RuntimeException("Plugin [{$review->plugin_id}] has active runs and cannot be replaced right now.");
+        }
+
+        $usesExistingManagedDirectory = $review->source_type === 'local_directory'
+            && $this->normalizeRealPath((string) $review->source_path) === $this->normalizeRealPath($targetPath);
+
+        if (! $usesExistingManagedDirectory) {
+            File::ensureDirectoryExists(dirname($targetPath));
+            $incomingPath = $targetPath.'.incoming-'.Str::random(6);
+            $backupPath = $targetPath.'.backup-'.Str::random(6);
+
+            if (is_dir($incomingPath)) {
+                File::deleteDirectory($incomingPath);
+            }
+
+            if (! File::copyDirectory($review->extracted_path, $incomingPath)) {
+                throw new RuntimeException("Failed to copy reviewed plugin files into the incoming staging area for [{$targetPath}].");
+            }
+
+            if (is_dir($targetPath) && ! File::moveDirectory($targetPath, $backupPath)) {
+                File::deleteDirectory($incomingPath);
+                throw new RuntimeException("Failed to prepare the existing plugin directory [{$targetPath}] for replacement.");
+            }
+
+            if (! File::moveDirectory($incomingPath, $targetPath)) {
+                if (is_dir($backupPath)) {
+                    File::moveDirectory($backupPath, $targetPath);
+                }
+
+                throw new RuntimeException("Failed to install reviewed plugin files into [{$targetPath}].");
+            }
+
+            if (is_dir($backupPath)) {
+                File::deleteDirectory($backupPath);
+            }
+        }
+
+        $plugin = collect($this->discover())->firstWhere('plugin_id', $review->plugin_id)
+            ?? throw new RuntimeException("Installed plugin [{$review->plugin_id}] could not be discovered after install.");
+
+        $plugin->update([
+            'source_type' => $review->source_type,
+            'installation_status' => 'installed',
+            'available' => true,
+        ]);
+        $plugin = $this->validate($plugin->fresh());
+
+        $review->update([
+            'status' => $trust ? 'approved' : 'installed',
+            'review_notes' => $notes,
+            'approved_at' => now(),
+            'approved_by_user_id' => $userId,
+            'installed_at' => now(),
+            'installed_path' => $targetPath,
+            'extension_plugin_id' => $plugin->id,
+        ]);
+
+        if ($trust) {
+            $plugin = $this->trust($plugin->fresh(), $userId, $notes);
+            $review->update([
+                'status' => 'installed',
+                'extension_plugin_id' => $plugin->id,
+            ]);
+        }
+
+        return $review->fresh();
+    }
+
+    public function rejectInstallReview(PluginInstallReview $review, ?int $userId = null, ?string $notes = null): PluginInstallReview
+    {
+        $review->update([
+            'status' => 'rejected',
+            'review_notes' => $notes,
+            'rejected_at' => now(),
+            'rejected_by_user_id' => $userId,
+        ]);
+
+        return $review->fresh();
+    }
+
+    public function discardInstallReview(PluginInstallReview $review): void
+    {
+        if ($review->status === 'installed') {
+            throw new RuntimeException('Installed reviews cannot be discarded. Reject or uninstall the plugin instead.');
+        }
+
+        if ($review->staging_path && is_dir($review->staging_path)) {
+            File::deleteDirectory($review->staging_path);
+        }
+
+        $review->update([
+            'status' => 'discarded',
+        ]);
     }
 
     public function resolvedSettings(ExtensionPlugin $plugin): array
@@ -292,7 +521,9 @@ class PluginManager
         $this->assertPluginRunnable($plugin);
 
         $entrypoint = rtrim((string) $plugin->path, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$plugin->entrypoint;
-        require_once $entrypoint;
+        if (! class_exists($plugin->class_name, false)) {
+            require_once $entrypoint;
+        }
 
         $instance = app($plugin->class_name);
         if (! $instance instanceof PluginInterface) {
@@ -313,6 +544,15 @@ class PluginManager
 
         if (! $plugin->manifest_hash || ! $plugin->entrypoint_hash || ! $plugin->plugin_hash) {
             throw new RuntimeException("Plugin [{$plugin->plugin_id}] is missing integrity hashes and cannot be trusted.");
+        }
+
+        $review = $this->approvedReviewForPlugin($plugin);
+        if (! $this->trustWithoutReviewAllowed($plugin) && ! $review) {
+            throw new RuntimeException("Plugin [{$plugin->plugin_id}] needs an approved install review before it can be trusted.");
+        }
+
+        if ($review && $this->scanRequiredForReview($review) && $review->scan_status !== 'clean') {
+            throw new RuntimeException("Plugin [{$plugin->plugin_id}] cannot be trusted until its install review has a clean ClamAV result.");
         }
 
         $schema = $plugin->schema_definition ?? [];
@@ -516,8 +756,13 @@ class PluginManager
     private function pluginPaths(): array
     {
         $paths = [];
+        $directories = config('plugins.directories', []);
 
-        foreach (config('plugins.directories', []) as $directory) {
+        if (config('plugins.install_mode') === 'dev') {
+            $directories = array_merge($directories, config('plugins.dev_directories', []));
+        }
+
+        foreach ($directories as $directory) {
             if (! is_dir($directory)) {
                 continue;
             }
@@ -590,6 +835,15 @@ class PluginManager
                     'level' => 'error',
                     'code' => 'plugin_files_changed',
                     'message' => 'Plugin files changed after trust and require a fresh review.',
+                ];
+            }
+
+            if (! $this->trustWithoutReviewAllowed($plugin) && ! $this->approvedReviewForPlugin($plugin)) {
+                $issues[] = [
+                    'plugin_id' => $plugin->plugin_id,
+                    'level' => $plugin->enabled ? 'error' : 'warning',
+                    'code' => 'missing_install_review',
+                    'message' => 'Plugin does not have an approved reviewed-install record for the current file set.',
                 ];
             }
 
@@ -818,6 +1072,166 @@ class PluginManager
         ]);
 
         return $run->fresh();
+    }
+
+    private function approvedReviewForPlugin(ExtensionPlugin $plugin): ?PluginInstallReview
+    {
+        return PluginInstallReview::query()
+            ->where('plugin_id', $plugin->plugin_id)
+            ->whereIn('status', ['approved', 'installed'])
+            ->orderByDesc('installed_at')
+            ->orderByDesc('approved_at')
+            ->get()
+            ->first(function (PluginInstallReview $review) use ($plugin): bool {
+                return data_get($review->integrity_hashes, 'plugin_hash') === $plugin->plugin_hash;
+            });
+    }
+
+    private function trustWithoutReviewAllowed(ExtensionPlugin $plugin): bool
+    {
+        return config('plugins.install_mode') === 'dev'
+            && $plugin->source_type === 'local_dev';
+    }
+
+    private function scanRequiredForReview(PluginInstallReview $review): bool
+    {
+        if (! config('plugins.clamav.required_for_trust', true)) {
+            return false;
+        }
+
+        return $review->source_type !== 'local_dev';
+    }
+
+    private function reviewStagingRoot(PluginInstallReview $review): string
+    {
+        return rtrim((string) config('plugins.staging_directory'), DIRECTORY_SEPARATOR)
+            .DIRECTORY_SEPARATOR.'review-'.$review->id;
+    }
+
+    private function managedPluginDirectory(): string
+    {
+        return (string) (collect(config('plugins.directories', [base_path('plugins')]))->first() ?: base_path('plugins'));
+    }
+
+    private function normalizeRealPath(string $path): string
+    {
+        $resolved = realpath($path);
+
+        return $resolved !== false ? $resolved : $path;
+    }
+
+    private function refreshInstallReview(
+        PluginInstallReview $review,
+        ?string $sourcePath = null,
+        ?string $stagingPath = null,
+        ?string $extractedPath = null,
+        ?string $archivePath = null,
+        ?string $archiveFilename = null,
+    ): PluginInstallReview {
+        if (! $extractedPath || ! is_dir($extractedPath)) {
+            throw new RuntimeException('Reviewed plugin payload directory is missing.');
+        }
+
+        $result = $this->validator->validatePath($extractedPath);
+        $manifest = $result->manifest;
+        $status = $result->valid ? 'review_ready' : 'staged';
+
+        $review->update([
+            'plugin_id' => $manifest?->id ?? $review->plugin_id,
+            'plugin_name' => $manifest?->name ?? Arr::get($result->manifestData, 'name', $review->plugin_name),
+            'plugin_version' => $manifest?->version ?? $review->plugin_version,
+            'api_version' => $manifest?->apiVersion ?? $review->api_version,
+            'source_path' => $sourcePath ?? $review->source_path,
+            'archive_path' => $archivePath ?? $review->archive_path,
+            'archive_filename' => $archiveFilename ?? $review->archive_filename,
+            'staging_path' => $stagingPath ?? $review->staging_path,
+            'extracted_path' => $extractedPath,
+            'status' => $status,
+            'validation_status' => $result->valid ? 'valid' : 'invalid',
+            'validation_errors' => $result->errors,
+            'capabilities' => $manifest?->capabilities ?? Arr::get($result->manifestData, 'capabilities', []),
+            'hooks' => $manifest?->hooks ?? Arr::get($result->manifestData, 'hooks', []),
+            'permissions' => $manifest?->permissions ?? Arr::get($result->manifestData, 'permissions', []),
+            'schema_definition' => $manifest?->schema ?? Arr::get($result->manifestData, 'schema', []),
+            'data_ownership' => $manifest?->dataOwnership ?? Arr::get($result->manifestData, 'data_ownership', []),
+            'integrity_hashes' => $result->hashes,
+            'manifest_snapshot' => $result->manifestData,
+        ]);
+
+        return $review->fresh();
+    }
+
+    private function extractPluginArchive(string $archivePath, string $extractRoot): string
+    {
+        $lowerName = Str::lower($archivePath);
+
+        if (Str::endsWith($lowerName, '.zip')) {
+            $zip = new ZipArchive;
+            $opened = $zip->open($archivePath);
+            if ($opened !== true) {
+                throw new RuntimeException("Unable to open plugin archive [{$archivePath}] as a zip file.");
+            }
+
+            $zip->extractTo($extractRoot);
+            $zip->close();
+
+            return $this->locateExtractedPluginRoot($extractRoot);
+        }
+
+        if (Str::endsWith($lowerName, ['.tar', '.tar.gz', '.tgz'])) {
+            $archiveToExtract = $archivePath;
+
+            if (Str::endsWith($lowerName, ['.tar.gz', '.tgz'])) {
+                $compressedPath = $extractRoot.DIRECTORY_SEPARATOR.(Str::endsWith($lowerName, '.tgz') ? 'archive.tgz' : 'archive.tar.gz');
+                File::copy($archivePath, $compressedPath);
+                $compressed = new PharData($compressedPath);
+                $compressed->decompress();
+                $archiveToExtract = Str::endsWith($compressedPath, '.tgz')
+                    ? Str::replaceLast('.tgz', '.tar', $compressedPath)
+                    : Str::replaceLast('.gz', '', $compressedPath);
+            }
+
+            $phar = new PharData($archiveToExtract);
+            $phar->extractTo($extractRoot, null, true);
+
+            return $this->locateExtractedPluginRoot($extractRoot);
+        }
+
+        throw new RuntimeException('Plugin archives must use .zip, .tar, .tar.gz, or .tgz.');
+    }
+
+    private function locateExtractedPluginRoot(string $extractRoot): string
+    {
+        if (file_exists($extractRoot.DIRECTORY_SEPARATOR.'plugin.json')) {
+            return $extractRoot;
+        }
+
+        $manifestFiles = collect(File::allFiles($extractRoot))
+            ->filter(fn ($file) => $file->getFilename() === 'plugin.json')
+            ->values();
+
+        if ($manifestFiles->count() !== 1) {
+            throw new RuntimeException('Plugin archive must contain exactly one plugin.json manifest.');
+        }
+
+        return $manifestFiles->first()->getPath();
+    }
+
+    private function determineSourceType(string $pluginPath, ExtensionPlugin $existing): string
+    {
+        if (in_array($existing->source_type, config('plugins.source_types', []), true)
+            && $existing->source_type === 'staged_archive') {
+            return $existing->source_type;
+        }
+
+        foreach (config('plugins.dev_directories', []) as $directory) {
+            $directory = rtrim((string) $directory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
+            if ($directory !== DIRECTORY_SEPARATOR && Str::startsWith($pluginPath, $directory)) {
+                return 'local_dev';
+            }
+        }
+
+        return 'local_directory';
     }
 
     private function determineSecurityState(ExtensionPlugin $existing, \App\Plugins\Support\PluginValidationResult $result, bool $available): array
