@@ -332,8 +332,8 @@ class EpgApiController extends Controller
                         break;
                 }
 
-                // Get the channel URL from the computed attribute, which handles proxy logic
-                $url = $channel->getProxyUrl();
+                // Get the channel URL and format from the computed attribute, which handles proxy logic
+                [$url, $channelFormat] = $channel->getProxyUrl(withFormat: true);
 
                 // Get the icon
                 $icon = '';

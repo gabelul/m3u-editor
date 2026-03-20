@@ -132,9 +132,6 @@ class Episode extends Model
             }
         }
 
-        // If a profile is set and has a format, use it to override the episode format
-        $episodeFormat = $profile->format ?? $episodeFormat;
-
         // If a specific format is provided (e.g. from a StreamProfile), use that instead of the detected format
         if ($profileFormat) {
             $episodeFormat = $profileFormat;
