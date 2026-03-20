@@ -10,7 +10,7 @@ This repository contains a fork-local plugin kernel. Treat it as a product surfa
 ## Use This Skill For
 
 - plugin kernel changes under `app/Plugins`, `app/Filament/Resources/ExtensionPlugins`, `config/plugins.php`, and `plugins/*`
-- plugin lifecycle work: discover, validate, enable, disable, uninstall, reinstall, forget
+- plugin lifecycle work: discover, validate, reviewed install, enable, disable, uninstall, reinstall, forget
 - plugin-owned storage rules, cleanup semantics, and uninstall safety
 - work on the bundled `plugins/epg-repair` reference plugin
 - future plugin scaffolding and capability expansion
@@ -43,6 +43,7 @@ If the task touches run review or evidence UX, also read:
 - Plugins extend published capabilities. Do not couple plugin authors to random internal services.
 - Manifest validation is mandatory before enablement.
 - Discovery does not imply trust. Admin trust + verified integrity are required before execution.
+- Normal environments should prefer reviewed local-directory or archive installs.
 - Long-running work must execute through queued plugin invocations.
 - Plugin-owned tables, files, and directories must be declared in `data_ownership`.
 - Plugin-owned tables should also be declared in `schema.tables`; raw plugin migrations are not part of this fork contract.
@@ -52,9 +53,11 @@ If the task touches run review or evidence UX, also read:
 
 ## System Model
 
-- Discovery scans `plugins/<plugin-id>/` and syncs manifests into `extension_plugins`.
+- Discovery scans managed plugin directories and syncs manifests into `extension_plugins`.
+- Reviewed installs are tracked separately in `plugin_install_reviews`.
 - Validation gates execution. Invalid plugins should never be treated as runnable.
 - Trust and integrity gate execution separately from validation.
+- Reviewed installs in normal mode need a clean ClamAV result before trust.
 - Enable and disable are currently operator-facing UI actions in Filament, not dedicated Artisan commands.
 - Manual actions, hooks, and schedules all produce persisted plugin runs with logs, heartbeats, and results.
 
@@ -81,6 +84,9 @@ After plugin-kernel or plugin changes, run the host checks in this order:
 
 ```bash
 php artisan make:plugin "Acme XML Tools"
+php artisan plugins:stage-directory /absolute/path/to/plugin
+php artisan plugins:scan-install 1
+php artisan plugins:approve-install 1 --trust
 php artisan plugins:discover
 php artisan plugins:validate
 php artisan plugins:verify-integrity
@@ -97,6 +103,12 @@ Use these commands and preserve their meanings:
 
 ```bash
 php artisan plugins:discover
+php artisan plugins:stage-directory /absolute/path/to/plugin
+php artisan plugins:stage-archive /absolute/path/to/plugin.zip
+php artisan plugins:scan-install 1
+php artisan plugins:approve-install 1 --trust
+php artisan plugins:reject-install 1
+php artisan plugins:discard-install 1
 php artisan plugins:validate epg-repair
 php artisan plugins:verify-integrity epg-repair
 php artisan plugins:trust epg-repair
@@ -116,6 +128,7 @@ Rules:
 - `Block`: admin stop-switch that disables execution until trust is restored
 - `Uninstall`: lifecycle transition with preserve-or-purge cleanup
 - `Forget`: registry cleanup only; files remain on disk and discovery can re-register the plugin
+- `Reviewed install`: stage -> scan -> approve/install -> optionally trust
 - `Recover stale runs`: marks interrupted runs stale when heartbeat has stopped beyond the configured threshold
 
 ## Reference Plugin Expectations

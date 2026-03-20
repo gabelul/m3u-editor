@@ -62,6 +62,23 @@ class EditExtensionPlugin extends EditRecord
 
                     $this->refreshFormData(['validation_status', 'validation_errors_json']);
                 }),
+            Action::make('stage_review')
+                ->label('Stage Current Files For Review')
+                ->icon('heroicon-o-archive-box')
+                ->visible(fn () => $canManagePlugins && filled($this->record->path) && $this->record->available)
+                ->action(function () use ($record): void {
+                    $review = app(PluginManager::class)->stageDirectoryReview(
+                        (string) $record->path,
+                        auth()->id(),
+                        $record->source_type === 'local_dev',
+                    );
+
+                    Notification::make()
+                        ->success()
+                        ->title('Install review staged')
+                        ->body("Review #{$review->id} is ready for ClamAV scan and approval in Install Reviews.")
+                        ->send();
+                }),
             Action::make('enable')
                 ->label('Enable')
                 ->icon('heroicon-o-check-circle')

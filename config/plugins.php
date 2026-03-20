@@ -3,8 +3,41 @@
 return [
     'api_version' => '1.0.0',
 
+    'install_mode' => env('PLUGIN_INSTALL_MODE', 'normal'),
+
     'directories' => [
         base_path('plugins'),
+    ],
+
+    'dev_directories' => array_values(array_filter(array_map(
+        'trim',
+        explode(',', (string) env('PLUGIN_DEV_DIRECTORIES', ''))
+    ))),
+
+    'staging_directory' => storage_path('app/plugin-staging'),
+
+    'review_statuses' => [
+        'staged',
+        'scanned',
+        'review_ready',
+        'approved',
+        'rejected',
+        'installed',
+        'discarded',
+    ],
+
+    'scan_statuses' => [
+        'pending',
+        'clean',
+        'infected',
+        'scan_failed',
+        'scanner_unavailable',
+    ],
+
+    'source_types' => [
+        'local_directory',
+        'staged_archive',
+        'local_dev',
     ],
 
     'cleanup_modes' => [
@@ -28,6 +61,15 @@ return [
     'owned_storage_roots' => [
         'plugin-data',
         'plugin-reports',
+    ],
+
+    'clamav' => [
+        'driver' => env('PLUGIN_SCAN_DRIVER', 'clamav'),
+        'binary' => env('CLAMAV_BINARY', 'clamscan'),
+        'timeout' => (int) env('CLAMAV_TIMEOUT', 60),
+        'required_for_trust' => (bool) env('PLUGIN_SCAN_REQUIRED_FOR_TRUST', true),
+        'fake_result' => env('PLUGIN_SCAN_FAKE_RESULT', 'clean'),
+        'scan_archive_files' => (bool) env('PLUGIN_SCAN_ARCHIVES', true),
     ],
 
     'permissions' => [

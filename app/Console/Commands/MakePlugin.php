@@ -111,9 +111,10 @@ class MakePlugin extends Command
 
         $this->info("Created plugin [{$pluginId}] in [{$relativePath}].");
         $this->line('Next steps:');
+        $this->line("  php artisan plugins:stage-directory {$relativePath}");
+        $this->line("  php artisan plugins:scan-install <review-id>");
+        $this->line("  php artisan plugins:approve-install <review-id> --trust");
         $this->line("  php artisan plugins:discover");
-        $this->line("  php artisan plugins:validate {$pluginId}");
-        $this->line("  php artisan plugins:trust {$pluginId}");
 
         return self::SUCCESS;
     }

@@ -78,6 +78,11 @@ class ExtensionPlugin extends Model
         return $this->hasMany(ExtensionPluginRun::class)->latest();
     }
 
+    public function installReviews(): HasMany
+    {
+        return $this->hasMany(PluginInstallReview::class)->latest();
+    }
+
     public function logs(): HasManyThrough
     {
         return $this->hasManyThrough(
