@@ -5,8 +5,8 @@
     {{-- Check auth --}}
     @php
         $auth = $this->getAuth();
-        $guestUsername = $auth['username'] ?? null;
-        $guestPassword = $auth['password'] ?? null;
+        $username = $auth['username'] ?? null;
+        $password = $auth['password'] ?? null;
     @endphp
 
     @php
@@ -78,9 +78,11 @@
             'content_type' => 'vod',
             'playlist_id' => $record->playlist_id,
             'title' => $title,
-            'url' => $record->getProxyUrl(username: $guestUsername, password: $guestPassword), // pass guest auth (if set)
+            'url' => $record->getProxyUrl(username: $username, password: $password), // pass guest auth (if set)
             'format' => $record->container_extension ?? 'ts',
             'type' => 'channel',
+            'username' => $username,
+            'password' => $password,
         ]);
     @endphp
 
@@ -302,7 +304,7 @@
                 <div class="col-span-full">
                     <span class="text-sm text-gray-500">Proxy URL</span>
                     <div class="font-mono text-sm bg-gray-100 dark:bg-gray-800 p-2 rounded mt-1 overflow-x-auto">
-                        {{ $record->getProxyUrl(username: $guestUsername, password: $guestPassword) }}
+                        {{ $record->getProxyUrl(username: $username, password: $password) }}
                     </div>
                 </div>
             </div>

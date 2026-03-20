@@ -18,8 +18,8 @@
     {{-- Check auth --}}
     @php
         $auth = $this->getAuth();
-        $guestUsername = $auth['username'] ?? null;
-        $guestPassword = $auth['password'] ?? null;
+        $username = $auth['username'] ?? null;
+        $password = $auth['password'] ?? null;
     @endphp
 
     @if($backdropUrl)
@@ -292,7 +292,7 @@
                                         {{-- Play Button Overlay --}}
                                         @if($episode->enabled)
                                             <button type="button"
-                                                wire:click="$dispatch('openFloatingStream', {{ json_encode($episode->getFloatingPlayerAttributes($guestUsername, $guestPassword)) }})"
+                                                wire:click="$dispatch('openFloatingStream', {{ json_encode($episode->getFloatingPlayerAttributes($username, $password)) }})"
                                                 class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity cursor-pointer">
                                                 <div
                                                     class="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
