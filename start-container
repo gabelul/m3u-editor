@@ -326,8 +326,10 @@ upsert_env_value() {
     awk -v key="$key" -v value="$value" '
         BEGIN { updated = 0 }
         index($0, key "=") == 1 {
-            print key "=" value
-            updated = 1
+            if (!updated) {
+                print key "=" value
+                updated = 1
+            }
             next
         }
         { print }
@@ -399,6 +401,16 @@ echo "" > "${nginx_log_file}"
 
 # Link environment file
 ln -sf "${env_file}" .env
+
+# Persist runtime-generated application and Redis settings so Laravel web
+# requests, health checks, and docker exec artisan commands all see the same
+# endpoint values instead of falling back to stale defaults from config files.
+upsert_env_value "${env_file}" "APP_URL" "${APP_URL}"
+upsert_env_value "${env_file}" "APP_PORT" "${APP_PORT}"
+upsert_env_value "${env_file}" "REDIS_ENABLED" "${REDIS_ENABLED}"
+upsert_env_value "${env_file}" "REDIS_HOST" "${REDIS_HOST}"
+upsert_env_value "${env_file}" "REDIS_SERVER_PORT" "${REDIS_SERVER_PORT}"
+upsert_env_value "${env_file}" "REDIS_PASSWORD" "${REDIS_PASSWORD}"
 
 # Persist runtime-generated websocket configuration so Laravel web requests,
 # health checks, and docker exec artisan commands all see the same values.
