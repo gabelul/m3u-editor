@@ -58,6 +58,18 @@ class ForcePasswordChange extends Component
             'must_change_password' => false,
         ]);
 
+        // Directly update the session's stored password hash so that
+        // AuthenticateSession doesn't consider the session stale and log
+        // the user out. We cannot use auth()->guard()->login() here because
+        // that calls session()->regenerate(), which changes the session ID,
+        // invalidates the CSRF token, and causes a "page expired" error in
+        // Livewire. Patching the hash in-place avoids all of that.
+        $user->refresh();
+        session()->put(
+            'password_hash_'.config('auth.defaults.guard'),
+            $user->getAuthPassword()
+        );
+
         $this->password = '';
         $this->password_confirmation = '';
         $this->show = false;

@@ -35,7 +35,17 @@ class EditProfile extends \Filament\Auth\Pages\EditProfile
 
                         // $this->getEmailFormComponent(),
                         $this->getPasswordFormComponent()
-                            ->helperText('Leave blank to keep the current password'),
+                            ->helperText('Leave blank to keep the current password')
+                            ->rules([
+                                'min:8',
+                                function () {
+                                    return function (string $attribute, mixed $value, \Closure $fail) {
+                                        if (filled($value) && in_array(strtolower($value), ['admin', 'password', '12345678', '123456789', 'qwerty123'])) {
+                                            $fail('Please choose a more secure password.');
+                                        }
+                                    };
+                                },
+                            ]),
                         $this->getPasswordConfirmationFormComponent(),
                     ]),
             ]);
