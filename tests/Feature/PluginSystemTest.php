@@ -17,6 +17,7 @@ use App\Plugins\PluginSchemaMapper;
 use App\Jobs\ExecutePluginInvocation;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
@@ -173,13 +174,53 @@ function createZipArchiveForTests(string $sourcePath, string $archivePath, array
     $zip->close();
 }
 
+function createGitHubReleaseUrlForTests(string $pluginId): string
+{
+    return "https://github.com/example/{$pluginId}-plugin/releases/download/v1.0.0/{$pluginId}.zip";
+}
+
+function storeUploadedArchiveForTests(string $pluginId, string $archivePath): string
+{
+    $relativePath = trim((string) config('plugins.upload_directory', 'plugin-review-uploads'), '/').'/'.$pluginId.'.zip';
+
+    Storage::disk('local')->delete($relativePath);
+    Storage::disk('local')->put($relativePath, File::get($archivePath));
+
+    return $relativePath;
+}
+
 function cleanupReviewFixturePlugin(string $pluginId): void
 {
+    $pluginManager = app(PluginManager::class);
+    $plugin = $pluginManager->findPluginById($pluginId);
+
+    if ($plugin && ! $plugin->hasActiveRuns()) {
+        $pluginManager->forgetRegistryRecord($plugin);
+    }
+
+    $reviews = PluginInstallReview::query()
+        ->where('plugin_id', $pluginId)
+        ->get();
+
+    foreach ($reviews as $review) {
+        if ($review->staging_path && is_dir($review->staging_path)) {
+            File::deleteDirectory($review->staging_path);
+        }
+    }
+
+    PluginInstallReview::query()->where('plugin_id', $pluginId)->delete();
+    ExtensionPlugin::query()->where('plugin_id', $pluginId)->delete();
+
+    foreach (config('plugins.directories', [base_path('plugins')]) as $directory) {
+        File::deleteDirectory(rtrim((string) $directory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$pluginId);
+    }
+
     $paths = pluginReviewFixturePaths($pluginId);
 
     File::deleteDirectory($paths['source']);
     File::delete($paths['archive']);
     File::delete($paths['sentinel']);
+    Storage::disk('local')->delete(trim((string) config('plugins.upload_directory', 'plugin-review-uploads'), '/').'/'.$pluginId.'.zip');
 }
 
 it('discovers the bundled epg repair plugin as a valid local plugin', function () {
@@ -259,6 +300,223 @@ it('rejects archive entries that try to escape the staging root', function () {
     try {
         expect(fn () => app(PluginManager::class)->stageArchiveReview($paths['archive']))
             ->toThrow(RuntimeException::class, 'unsafe path entry');
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('stages a GitHub release archive with a pinned checksum', function () {
+    $pluginId = 'github-release-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $releaseUrl = createGitHubReleaseUrlForTests($pluginId);
+    $checksum = hash_file('sha256', $paths['archive']);
+
+    Http::fake([
+        $releaseUrl => Http::response(File::get($paths['archive']), 200, [
+            'Content-Type' => 'application/zip',
+        ]),
+    ]);
+
+    try {
+        $review = app(PluginManager::class)->stageGithubReleaseReview($releaseUrl, (string) $checksum);
+
+        expect($review->source_type)->toBe('github_release');
+        expect($review->source_origin)->toBe("example/{$pluginId}-plugin@v1.0.0");
+        expect(data_get($review->source_metadata, 'asset_name'))->toBe("{$pluginId}.zip");
+        expect($review->expected_archive_sha256)->toBe($checksum);
+        expect($review->archive_sha256)->toBe($checksum);
+        expect($review->validation_status)->toBe('valid');
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('rejects a GitHub release archive when the pinned checksum does not match', function () {
+    $pluginId = 'github-checksum-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $releaseUrl = createGitHubReleaseUrlForTests($pluginId);
+
+    Http::fake([
+        $releaseUrl => Http::response(File::get($paths['archive']), 200, [
+            'Content-Type' => 'application/zip',
+        ]),
+    ]);
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageGithubReleaseReview($releaseUrl, str_repeat('a', 64)))
+            ->toThrow(RuntimeException::class, 'checksum mismatch');
+
+        expect(PluginInstallReview::query()->where('source_path', $releaseUrl)->exists())->toBeFalse();
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('rejects dev-source reviews outside dev mode', function () {
+    $pluginId = 'dev-policy-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageDirectoryReview($paths['source'], null, true))
+            ->toThrow(RuntimeException::class, 'PLUGIN_INSTALL_MODE=dev');
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('requires dev-source reviews to come from configured dev directories', function () {
+    $pluginId = 'dev-dir-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    config()->set('plugins.install_mode', 'dev');
+    config()->set('plugins.dev_directories', [storage_path('app/somewhere-else')]);
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageDirectoryReview($paths['source'], null, true))
+            ->toThrow(RuntimeException::class, 'PLUGIN_DEV_DIRECTORIES');
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('allows dev-source reviews only from configured dev directories in dev mode', function () {
+    $pluginId = 'dev-ok-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    config()->set('plugins.install_mode', 'dev');
+    config()->set('plugins.dev_directories', [dirname($paths['source'])]);
+
+    try {
+        $review = app(PluginManager::class)->stageDirectoryReview($paths['source'], null, true);
+
+        expect($review->source_type)->toBe('local_dev');
+        expect($review->validation_status)->toBe('valid');
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('stages an uploaded archive from local storage for install review', function () {
+    $pluginId = 'upload-stage-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $uploadedPath = storeUploadedArchiveForTests($pluginId, $paths['archive']);
+
+    try {
+        $review = app(PluginManager::class)->stageUploadedArchiveReview($uploadedPath);
+
+        expect($review->source_type)->toBe('uploaded_archive');
+        expect($review->source_origin)->toBe('browser_upload');
+        expect(data_get($review->source_metadata, 'upload_path'))->toBe($uploadedPath);
+        expect($review->validation_status)->toBe('valid');
+        expect($review->archive_sha256)->toBe(hash_file('sha256', $paths['archive']));
+        expect(Storage::disk('local')->exists($uploadedPath))->toBeFalse();
+        expect(is_file((string) $review->archive_path))->toBeTrue();
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('rejects uploaded archives outside the configured upload directory', function () {
+    $pluginId = 'upload-policy-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $uploadedPath = 'wrong-place/'.$pluginId.'.zip';
+    Storage::disk('local')->put($uploadedPath, File::get($paths['archive']));
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageUploadedArchiveReview($uploadedPath))
+            ->toThrow(RuntimeException::class, 'configured plugin upload directory');
+    } finally {
+        Storage::disk('local')->delete($uploadedPath);
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('rejects uploaded archives that try to escape the upload directory with dot segments', function () {
+    $pluginId = 'upload-dotdot-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $uploadedPath = trim((string) config('plugins.upload_directory', 'plugin-review-uploads'), '/').'/../wrong-place/'.$pluginId.'.zip';
+    File::ensureDirectoryExists(dirname(Storage::disk('local')->path($uploadedPath)));
+    File::put(Storage::disk('local')->path($uploadedPath), File::get($paths['archive']));
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageUploadedArchiveReview($uploadedPath))
+            ->toThrow(RuntimeException::class, 'configured plugin upload directory');
+    } finally {
+        Storage::disk('local')->delete($uploadedPath);
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('cleans uploaded archive artifacts when staging fails', function () {
+    $pluginId = 'upload-fail-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive'], [
+        '../escape.php' => '<?php echo "bad";',
+    ]);
+    $uploadedPath = storeUploadedArchiveForTests($pluginId, $paths['archive']);
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageUploadedArchiveReview($uploadedPath))
+            ->toThrow(RuntimeException::class, 'unsafe path entry');
+
+        expect(Storage::disk('local')->exists($uploadedPath))->toBeFalse();
+        expect(PluginInstallReview::query()
+            ->where('source_type', 'uploaded_archive')
+            ->where('source_path', 'browser-upload://'.$pluginId.'.zip')
+            ->exists())->toBeFalse();
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('keeps uploaded archive staging through rejection and removes it on discard', function () {
+    $pluginId = 'upload-discard-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $uploadedPath = storeUploadedArchiveForTests($pluginId, $paths['archive']);
+
+    try {
+        $review = app(PluginManager::class)->stageUploadedArchiveReview($uploadedPath);
+        $review = app(PluginManager::class)->rejectInstallReview($review);
+
+        expect($review->status)->toBe('rejected');
+        expect(is_file((string) $review->archive_path))->toBeTrue();
+        expect(is_dir((string) $review->staging_path))->toBeTrue();
+
+        app(PluginManager::class)->discardInstallReview($review);
+
+        expect(is_dir((string) $review->staging_path))->toBeFalse();
+        expect($review->fresh()->archive_path)->toBeNull();
+        expect($review->fresh()->staging_path)->toBeNull();
+        expect($review->fresh()->extracted_path)->toBeNull();
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('cleans uploaded archive staging after a successful install', function () {
+    $pluginId = 'upload-install-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $uploadedPath = storeUploadedArchiveForTests($pluginId, $paths['archive']);
+
+    try {
+        $review = app(PluginManager::class)->stageUploadedArchiveReview($uploadedPath);
+        $review = app(PluginManager::class)->scanInstallReview($review);
+        $review = app(PluginManager::class)->approveInstallReview($review, true);
+
+        expect($review->status)->toBe('installed');
+        expect($review->archive_path)->toBeNull();
+        expect($review->staging_path)->toBeNull();
+        expect($review->extracted_path)->toBeNull();
+
+        $plugin = app(PluginManager::class)->findPluginById($pluginId);
+
+        expect($plugin?->trust_state)->toBe('trusted');
+        expect($plugin?->source_type)->toBe('uploaded_archive');
     } finally {
         cleanupReviewFixturePlugin($pluginId);
     }
@@ -1034,6 +1292,100 @@ it('supports the reviewed install command flow for local plugin directories', fu
 
     expect($plugin?->trust_state)->toBe('trusted');
     expect($plugin?->integrity_status)->toBe('verified');
+});
+
+it('updates an installed plugin from a reviewed archive and keeps it enabled when trusted', function () {
+    $pluginManager = app(PluginManager::class);
+    $archivePath = storage_path('app/testing-plugin-archives/epg-repair-duplicate.zip');
+    $updatedSourcePath = storage_path('app/testing-plugin-sources/epg-repair-update');
+
+    File::deleteDirectory($updatedSourcePath);
+    File::ensureDirectoryExists(dirname($archivePath));
+    File::ensureDirectoryExists(dirname($archivePath));
+    File::delete($archivePath);
+
+    try {
+        $firstReview = $pluginManager->stageDirectoryReview(base_path('plugins/epg-repair'));
+        $firstReview = $pluginManager->scanInstallReview($firstReview);
+        $pluginManager->approveInstallReview($firstReview, true);
+        $plugin = $pluginManager->findPluginById('epg-repair');
+        $plugin?->update(['enabled' => true]);
+
+        File::copyDirectory(base_path('plugins/epg-repair'), $updatedSourcePath);
+
+        $manifestPath = $updatedSourcePath.'/plugin.json';
+        $manifest = json_decode(File::get($manifestPath), true, flags: JSON_THROW_ON_ERROR);
+        $manifest['version'] = '1.0.1';
+        $manifest['description'] = 'Reviewed update package for EPG Repair.';
+        File::put($manifestPath, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).PHP_EOL);
+
+        createZipArchiveForTests($updatedSourcePath, $archivePath);
+
+        $secondReview = $pluginManager->stageArchiveReview($archivePath);
+        $secondReview = $pluginManager->scanInstallReview($secondReview);
+        $secondReview = $pluginManager->approveInstallReview($secondReview, true);
+        $updatedPlugin = $pluginManager->findPluginById('epg-repair');
+
+        expect($secondReview->status)->toBe('installed');
+        expect($updatedPlugin?->version)->toBe('1.0.1');
+        expect($updatedPlugin?->description)->toBe('Reviewed update package for EPG Repair.');
+        expect($updatedPlugin?->trust_state)->toBe('trusted');
+        expect($updatedPlugin?->integrity_status)->toBe('verified');
+        expect($updatedPlugin?->enabled)->toBeTrue();
+
+        $this->artisan('plugins:approve-install', [
+            'reviewId' => $secondReview->id,
+            '--trust' => true,
+        ])->assertSuccessful()
+            ->expectsOutputToContain('installed plugin [epg-repair]');
+    } finally {
+        File::delete($archivePath);
+        File::deleteDirectory($updatedSourcePath);
+    }
+});
+
+it('supports the reviewed install command flow for GitHub release archives', function () {
+    $pluginId = 'github-cli-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+    $releaseUrl = createGitHubReleaseUrlForTests($pluginId);
+    $checksum = hash_file('sha256', $paths['archive']);
+
+    Http::fake([
+        $releaseUrl => Http::response(File::get($paths['archive']), 200, [
+            'Content-Type' => 'application/zip',
+        ]),
+    ]);
+
+    try {
+        $this->artisan('plugins:stage-github-release', [
+            'url' => $releaseUrl,
+            '--sha256' => $checksum,
+        ])->assertSuccessful()
+            ->expectsOutputToContain('Created install review');
+
+        $review = PluginInstallReview::query()->latest('id')->first();
+
+        expect($review)->not->toBeNull();
+        expect($review?->plugin_id)->toBe($pluginId);
+        expect($review?->source_type)->toBe('github_release');
+
+        $this->artisan('plugins:scan-install', [
+            'reviewId' => $review->id,
+        ])->assertSuccessful();
+
+        $this->artisan('plugins:approve-install', [
+            'reviewId' => $review->id,
+            '--trust' => true,
+        ])->assertSuccessful();
+
+        $plugin = app(PluginManager::class)->findPluginById($pluginId);
+
+        expect($plugin?->trust_state)->toBe('trusted');
+        expect($plugin?->integrity_status)->toBe('verified');
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
 });
 
 it('reports plugin registry health through the doctor command', function () {

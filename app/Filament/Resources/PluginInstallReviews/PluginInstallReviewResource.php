@@ -19,11 +19,11 @@ class PluginInstallReviewResource extends Resource
 {
     protected static ?string $model = PluginInstallReview::class;
 
-    protected static ?string $label = 'Install Review';
+    protected static ?string $label = 'Plugin Install';
 
-    protected static ?string $pluralLabel = 'Install Reviews';
+    protected static ?string $pluralLabel = 'Plugin Installs';
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Tools';
+    protected static string|\UnitEnum|null $navigationGroup = 'Extensions';
 
     public static function canAccess(): bool
     {
@@ -32,12 +32,12 @@ class PluginInstallReviewResource extends Resource
 
     public static function getNavigationLabel(): string
     {
-        return 'Install Reviews';
+        return 'Plugin Installs';
     }
 
     public static function getNavigationSort(): ?int
     {
-        return 6;
+        return 3;
     }
 
     public static function form(Schema $schema): Schema
@@ -49,10 +49,13 @@ class PluginInstallReviewResource extends Resource
                     TextInput::make('plugin_id')->disabled(),
                     TextInput::make('plugin_name')->disabled(),
                     TextInput::make('source_type')->disabled(),
+                    TextInput::make('source_origin')->disabled(),
                     TextInput::make('status')->disabled(),
                     TextInput::make('validation_status')->disabled(),
                     TextInput::make('scan_status')->disabled(),
                     TextInput::make('archive_filename')->disabled(),
+                    TextInput::make('expected_archive_sha256')->disabled(),
+                    TextInput::make('archive_sha256')->disabled(),
                     TextInput::make('installed_path')->disabled()->columnSpanFull(),
                     TextInput::make('source_path')->disabled()->columnSpanFull(),
                     TextInput::make('extracted_path')->disabled()->columnSpanFull(),
@@ -66,6 +69,18 @@ class PluginInstallReviewResource extends Resource
                     Placeholder::make('capabilities_preview')
                         ->hiddenLabel()
                         ->content(fn (?PluginInstallReview $record) => collect($record?->capabilities ?? [])->implode(', ') ?: 'No capabilities declared.'),
+                    Placeholder::make('high_risk_permissions')
+                        ->label('High-Risk Permissions')
+                        ->content(function (?PluginInstallReview $record): string {
+                            $highRisk = collect($record?->permissions ?? [])
+                                ->intersect(['network_egress', 'filesystem_write', 'schema_manage'])
+                                ->values();
+
+                            return $highRisk->isNotEmpty()
+                                ? $highRisk->implode(', ')
+                                : 'No high-risk permissions declared.';
+                        })
+                        ->columnSpanFull(),
                     Textarea::make('schema_json')
                         ->label('Schema')
                         ->disabled()
@@ -94,6 +109,12 @@ class PluginInstallReviewResource extends Resource
                         ->rows(10)
                         ->dehydrated(false)
                         ->formatStateUsing(fn (?PluginInstallReview $record) => json_encode($record?->scan_details ?? [], JSON_PRETTY_PRINT)),
+                    Textarea::make('source_metadata_json')
+                        ->label('Source Metadata')
+                        ->disabled()
+                        ->rows(10)
+                        ->dehydrated(false)
+                        ->formatStateUsing(fn (?PluginInstallReview $record) => json_encode($record?->source_metadata ?? [], JSON_PRETTY_PRINT)),
                 ]),
             Section::make('Review Notes')
                 ->schema([
@@ -112,6 +133,7 @@ class PluginInstallReviewResource extends Resource
                 TextColumn::make('id')->sortable(),
                 TextColumn::make('plugin_id')->searchable(),
                 TextColumn::make('source_type')->badge(),
+                TextColumn::make('source_origin')->limit(40)->toggleable(),
                 TextColumn::make('status')->badge(),
                 TextColumn::make('validation_status')->badge(),
                 TextColumn::make('scan_status')->badge(),

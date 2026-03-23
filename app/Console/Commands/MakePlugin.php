@@ -15,6 +15,7 @@ class MakePlugin extends Command
         {--hook=* : Hook names to subscribe to}
         {--cleanup=preserve : Default cleanup mode for uninstall (preserve|purge)}
         {--lifecycle : Include a lifecycle uninstall hook stub}
+        {--bare : Generate only plugin.json and Plugin.php without the starter kit}
         {--force : Overwrite the target plugin directory if it already exists}';
 
     protected $description = 'Scaffold a trusted-local plugin with a valid manifest and Plugin.php entrypoint.';
@@ -105,6 +106,17 @@ class MakePlugin extends Command
             ),
         );
 
+        if (! $this->option('bare')) {
+            $this->writeStarterKitFiles(
+                pluginPath: $pluginPath,
+                pluginId: $pluginId,
+                displayName: $displayName,
+                classSegment: $classSegment,
+                capabilities: $capabilities,
+                hooks: $hooks,
+            );
+        }
+
         $relativePath = Str::startsWith($pluginPath, base_path().DIRECTORY_SEPARATOR)
             ? Str::after($pluginPath, base_path().DIRECTORY_SEPARATOR)
             : $pluginPath;
@@ -115,6 +127,10 @@ class MakePlugin extends Command
         $this->line("  php artisan plugins:scan-install <review-id>");
         $this->line("  php artisan plugins:approve-install <review-id> --trust");
         $this->line("  php artisan plugins:discover");
+        if (! $this->option('bare')) {
+            $this->line("  bash {$relativePath}/scripts/package-plugin.sh");
+            $this->line("  Publish the packaged zip with its SHA-256 checksum for reviewed GitHub installs.");
+        }
 
         return self::SUCCESS;
     }
@@ -260,6 +276,60 @@ class MakePlugin extends Command
         ];
 
         return strtr(File::get(base_path('stubs/plugins/plugin.class.stub')), $replacements);
+    }
+
+    private function writeStarterKitFiles(
+        string $pluginPath,
+        string $pluginId,
+        string $displayName,
+        string $classSegment,
+        array $capabilities,
+        array $hooks,
+    ): void {
+        $replacements = [
+            '{{ plugin_id }}' => $pluginId,
+            '{{ display_name }}' => $displayName,
+            '{{ class_segment }}' => $classSegment,
+            '{{ namespace }}' => "AppLocalPlugins\\{$classSegment}",
+            '{{ capabilities_list }}' => $this->bulletList($capabilities, 'No capabilities declared yet.'),
+            '{{ hooks_list }}' => $this->bulletList($hooks, 'No hooks declared yet.'),
+        ];
+
+        $files = [
+            'README.md' => 'stubs/plugins/README.stub',
+            'AGENTS.md' => 'stubs/plugins/AGENTS.stub',
+            'CLAUDE.md' => 'stubs/plugins/CLAUDE.stub',
+            '.github/workflows/plugin-ci.yml' => 'stubs/plugins/plugin-ci.stub',
+            'scripts/package-plugin.sh' => 'stubs/plugins/package-plugin.stub',
+            'scripts/validate-plugin.php' => 'stubs/plugins/validate-plugin.stub',
+        ];
+
+        foreach ($files as $relativePath => $stubPath) {
+            $destinationPath = $pluginPath.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+            File::ensureDirectoryExists(dirname($destinationPath));
+            File::put($destinationPath, $this->renderTemplate($stubPath, $replacements));
+
+            if (str_starts_with($relativePath, 'scripts/')) {
+                @chmod($destinationPath, 0755);
+            }
+        }
+    }
+
+    private function renderTemplate(string $stubPath, array $replacements): string
+    {
+        return strtr(File::get(base_path($stubPath)), $replacements);
+    }
+
+    private function bulletList(array $values, string $emptyMessage): string
+    {
+        if ($values === []) {
+            return '- '.$emptyMessage;
+        }
+
+        return implode(PHP_EOL, array_map(
+            fn (string $value) => '- '.$value,
+            $values,
+        ));
     }
 
     private function hookMethodStub(string $pluginId, string $displayName): string
