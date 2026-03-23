@@ -11,6 +11,7 @@
 ARG M3U_PROXY_REPO=https://github.com/sparkison/m3u-proxy.git
 ARG M3U_PROXY_BRANCH=master
 ARG INSTALL_DEV_DEPENDENCIES=false
+ARG INSTALL_CLAMAV=false
 
 # Optional: use a local m3u-proxy directory instead of cloning from git.
 # Must be a path relative to the Docker build context.
@@ -131,6 +132,7 @@ WORKDIR /var/www/html
 ARG GIT_BRANCH
 ARG GIT_COMMIT
 ARG GIT_TAG
+ARG INSTALL_CLAMAV=false
 
 # Set environment variables
 ENV GIT_BRANCH=${GIT_BRANCH} \
@@ -209,6 +211,15 @@ RUN echo "@edge https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/rep
     php84-pecl-imagick \
     php84-pecl-redis \
     php84-pcntl && \
+    if [ "${INSTALL_CLAMAV}" = "true" ]; then \
+        apk add --no-cache \
+        clamav \
+        clamav-libunrar \
+        freshclam && \
+        if [ -f /etc/clamav/freshclam.conf ]; then \
+            sed -i 's/^\s*NotifyClamd/# NotifyClamd/' /etc/clamav/freshclam.conf; \
+        fi; \
+    fi && \
     # Create PHP symlink
     ln -s /usr/bin/php84 /usr/bin/php && \
     # Clean up apk cache

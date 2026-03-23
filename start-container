@@ -53,6 +53,13 @@ export SUPERVISOR_PHP_USER="root"
 export APP_URL="${APP_URL:-http://localhost}"
 export APP_PORT="${APP_PORT:-36400}" # Default 36400
 
+# Plugin malware scanning
+export PLUGIN_SCAN_DRIVER="${PLUGIN_SCAN_DRIVER:-fake}"
+export CLAMAV_BINARY="${CLAMAV_BINARY:-clamscan}"
+export CLAMAV_TIMEOUT="${CLAMAV_TIMEOUT:-60}"
+export CLAMAV_UPDATE_DEFINITIONS="${CLAMAV_UPDATE_DEFINITIONS:-false}"
+export CLAMAV_DB_DIR="${CLAMAV_DB_DIR:-/var/lib/clamav}"
+
 # Xtream API endpoint port (separate nginx instance for Xtream-only access)
 export XTREAM_PORT="${XTREAM_PORT:-36401}" # Default 36401
 export XTREAM_ONLY_ENABLED="${XTREAM_ONLY_ENABLED:-false}" # Default disabled
@@ -419,6 +426,34 @@ upsert_env_value "${env_file}" "REVERB_APP_SECRET" "${REVERB_APP_SECRET}"
 upsert_env_value "${env_file}" "REVERB_HOST" "${REVERB_HOST}"
 upsert_env_value "${env_file}" "REVERB_PORT" "${REVERB_PORT}"
 upsert_env_value "${env_file}" "REVERB_SCHEME" "${REVERB_SCHEME}"
+upsert_env_value "${env_file}" "PLUGIN_SCAN_DRIVER" "${PLUGIN_SCAN_DRIVER}"
+upsert_env_value "${env_file}" "CLAMAV_BINARY" "${CLAMAV_BINARY}"
+upsert_env_value "${env_file}" "CLAMAV_TIMEOUT" "${CLAMAV_TIMEOUT}"
+
+# Keep ClamAV definitions warm only when real scanning is enabled.
+if [ "${PLUGIN_SCAN_DRIVER}" = "clamav" ]; then
+    if command -v "${CLAMAV_BINARY}" >/dev/null 2>&1; then
+        mkdir -p "${CLAMAV_DB_DIR}"
+
+        if find "${CLAMAV_DB_DIR}" -maxdepth 1 -type f \( -name '*.cvd' -o -name '*.cld' -o -name '*.cud' \) | grep -q .; then
+            echo "🛡️ ClamAV definitions found in ${CLAMAV_DB_DIR}."
+        else
+            echo "🛡️ No ClamAV definitions found in ${CLAMAV_DB_DIR}. Initializing..."
+            CLAMAV_UPDATE_DEFINITIONS="true"
+        fi
+
+        if [ "${CLAMAV_UPDATE_DEFINITIONS}" = "true" ]; then
+            echo "🛡️ Updating ClamAV definitions..."
+            if freshclam --stdout; then
+                echo "✅ ClamAV definitions are ready."
+            else
+                echo "⚠️  Failed to update ClamAV definitions. Plugin scans may report scanner_unavailable."
+            fi
+        fi
+    else
+        echo "⚠️  Plugin scan driver is set to clamav, but ${CLAMAV_BINARY} is not installed in this image."
+    fi
+fi
 
 # Ensure required Laravel runtime directories exist even when the build context
 # excludes transient cache/session/view folders.

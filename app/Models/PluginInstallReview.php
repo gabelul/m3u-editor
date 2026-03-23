@@ -17,8 +17,12 @@ class PluginInstallReview extends Model
         'api_version',
         'source_type',
         'source_path',
+        'source_origin',
+        'source_metadata',
         'archive_filename',
         'archive_path',
+        'expected_archive_sha256',
+        'archive_sha256',
         'staging_path',
         'extracted_path',
         'installed_path',
@@ -48,6 +52,7 @@ class PluginInstallReview extends Model
 
     protected $casts = [
         'validation_errors' => 'array',
+        'source_metadata' => 'array',
         'capabilities' => 'array',
         'hooks' => 'array',
         'permissions' => 'array',

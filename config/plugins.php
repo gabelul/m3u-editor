@@ -16,6 +16,8 @@ return [
 
     'staging_directory' => storage_path('app/plugin-staging'),
 
+    'upload_directory' => env('PLUGIN_UPLOAD_DIRECTORY', 'plugin-review-uploads'),
+
     'review_statuses' => [
         'staged',
         'scanned',
@@ -37,6 +39,8 @@ return [
     'source_types' => [
         'local_directory',
         'staged_archive',
+        'github_release',
+        'uploaded_archive',
         'local_dev',
     ],
 
@@ -70,6 +74,17 @@ return [
         'required_for_trust' => (bool) env('PLUGIN_SCAN_REQUIRED_FOR_TRUST', true),
         'fake_result' => env('PLUGIN_SCAN_FAKE_RESULT', 'clean'),
         'scan_archive_files' => (bool) env('PLUGIN_SCAN_ARCHIVES', true),
+    ],
+
+    'github' => [
+        'download_timeout' => (int) env('PLUGIN_GITHUB_DOWNLOAD_TIMEOUT', 60),
+        'allowed_hosts' => ['github.com'],
+    ],
+
+    'archive_limits' => [
+        'max_archive_bytes' => (int) env('PLUGIN_MAX_ARCHIVE_BYTES', 50 * 1024 * 1024),
+        'max_file_count' => (int) env('PLUGIN_MAX_ARCHIVE_FILES', 500),
+        'max_extracted_bytes' => (int) env('PLUGIN_MAX_EXTRACTED_BYTES', 100 * 1024 * 1024),
     ],
 
     'permissions' => [

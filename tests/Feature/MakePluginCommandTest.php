@@ -82,9 +82,17 @@ it('scaffolds a valid local plugin with optional capabilities, hooks, and lifecy
 
         expect(File::exists($pluginPath.'/plugin.json'))->toBeTrue();
         expect(File::exists($pluginPath.'/Plugin.php'))->toBeTrue();
+        expect(File::exists($pluginPath.'/README.md'))->toBeTrue();
+        expect(File::exists($pluginPath.'/AGENTS.md'))->toBeTrue();
+        expect(File::exists($pluginPath.'/CLAUDE.md'))->toBeTrue();
+        expect(File::exists($pluginPath.'/.github/workflows/plugin-ci.yml'))->toBeTrue();
+        expect(File::exists($pluginPath.'/scripts/package-plugin.sh'))->toBeTrue();
+        expect(File::exists($pluginPath.'/scripts/validate-plugin.php'))->toBeTrue();
 
         $manifest = json_decode(File::get($pluginPath.'/plugin.json'), true, 512, JSON_THROW_ON_ERROR);
         $pluginSource = File::get($pluginPath.'/Plugin.php');
+        $readme = File::get($pluginPath.'/README.md');
+        $workflow = File::get($pluginPath.'/.github/workflows/plugin-ci.yml');
 
         expect($manifest['id'])->toBe($pluginId);
         expect($manifest['name'])->toBe(Str::of($name)->replace(['-', '_'], ' ')->squish()->title()->value());
@@ -102,6 +110,9 @@ it('scaffolds a valid local plugin with optional capabilities, hooks, and lifecy
         expect($pluginSource)->toContain('public function runHook');
         expect($pluginSource)->toContain('public function scheduledActions');
         expect($pluginSource)->toContain('public function uninstall');
+        expect($readme)->toContain($pluginId);
+        expect($workflow)->toContain('actions/upload-artifact@v4');
+        expect($workflow)->toContain($pluginId.'-artifact');
 
         $this->artisan('plugins:discover')
             ->assertSuccessful()
@@ -135,6 +146,29 @@ it('scaffolds a valid local plugin with optional capabilities, hooks, and lifecy
         expect($run->status)->toBe('completed');
         expect($run->summary)->toContain('Health check completed');
         expect(data_get($run->result, 'data.plugin_id'))->toBe($pluginId);
+    } finally {
+        cleanupGeneratedPlugin($pluginId);
+    }
+});
+
+it('can generate a bare scaffold without starter kit files', function () {
+    $name = 'Bare Scaffold '.Str::upper(Str::random(4));
+    $pluginId = Str::slug($name);
+    $pluginPath = generatedPluginPath($pluginId);
+
+    cleanupGeneratedPlugin($pluginId);
+
+    try {
+        $this->artisan('make:plugin', [
+            'name' => $name,
+            '--bare' => true,
+        ])->assertSuccessful();
+
+        expect(File::exists($pluginPath.'/plugin.json'))->toBeTrue();
+        expect(File::exists($pluginPath.'/Plugin.php'))->toBeTrue();
+        expect(File::exists($pluginPath.'/README.md'))->toBeFalse();
+        expect(File::exists($pluginPath.'/AGENTS.md'))->toBeFalse();
+        expect(File::exists($pluginPath.'/.github/workflows/plugin-ci.yml'))->toBeFalse();
     } finally {
         cleanupGeneratedPlugin($pluginId);
     }

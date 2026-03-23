@@ -17,6 +17,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -169,6 +170,10 @@ class PluginManager
             throw new RuntimeException("Plugin source directory [{$sourcePath}] must contain plugin.json.");
         }
 
+        if ($devSource) {
+            $this->assertDevSourceAllowed($sourcePath);
+        }
+
         $review = PluginInstallReview::query()->create([
             'source_type' => $devSource ? 'local_dev' : 'local_directory',
             'source_path' => $sourcePath,
@@ -199,6 +204,8 @@ class PluginManager
             throw new RuntimeException("Plugin archive [{$archivePath}] does not exist.");
         }
 
+        $this->assertArchiveSizeWithinLimit($archivePath, $archivePath);
+
         $review = PluginInstallReview::query()->create([
             'source_type' => 'staged_archive',
             'source_path' => $archivePath,
@@ -214,6 +221,10 @@ class PluginManager
 
         $stagedArchivePath = $stagingRoot.DIRECTORY_SEPARATOR.basename($archivePath);
         File::copy($archivePath, $stagedArchivePath);
+        $this->assertArchiveSizeWithinLimit($stagedArchivePath, $archivePath);
+        $review->update([
+            'archive_sha256' => hash_file('sha256', $stagedArchivePath) ?: null,
+        ]);
 
         $extractRoot = $stagingRoot.DIRECTORY_SEPARATOR.'extracted';
         File::ensureDirectoryExists($extractRoot);
@@ -227,6 +238,161 @@ class PluginManager
             archivePath: $stagedArchivePath,
             archiveFilename: basename($archivePath),
         );
+    }
+
+    public function stageUploadedArchiveReview(string $uploadedPath, ?int $userId = null): PluginInstallReview
+    {
+        $uploadedPath = trim($uploadedPath);
+        if ($uploadedPath === '' || ! Storage::disk('local')->exists($uploadedPath)) {
+            throw new RuntimeException('Uploaded plugin archive is missing from local storage.');
+        }
+
+        $uploadDirectory = trim((string) config('plugins.upload_directory', 'plugin-review-uploads'), '/');
+        $absoluteUploadRoot = Storage::disk('local')->path($uploadDirectory);
+        File::ensureDirectoryExists($absoluteUploadRoot);
+
+        $absoluteUploadedPath = realpath(Storage::disk('local')->path($uploadedPath));
+        $resolvedUploadRoot = realpath($absoluteUploadRoot);
+
+        if ($absoluteUploadedPath === false || ! is_file($absoluteUploadedPath)) {
+            throw new RuntimeException('Uploaded plugin archive is missing from local storage.');
+        }
+
+        if ($resolvedUploadRoot === false) {
+            throw new RuntimeException('Configured plugin upload directory could not be resolved on local storage.');
+        }
+
+        $this->assertAbsolutePathWithinRoot(
+            $absoluteUploadedPath,
+            $resolvedUploadRoot,
+            'Uploaded plugin archives must come from the configured plugin upload directory.',
+        );
+
+        $archiveFilename = basename($uploadedPath);
+        $sourceReference = 'browser-upload://'.$archiveFilename;
+        $review = null;
+        $stagingRoot = null;
+
+        try {
+            $this->assertArchiveSizeWithinLimit($absoluteUploadedPath, $archiveFilename);
+
+            $review = PluginInstallReview::query()->create([
+                'source_type' => 'uploaded_archive',
+                'source_path' => $sourceReference,
+                'source_origin' => 'browser_upload',
+                'source_metadata' => [
+                    'disk' => 'local',
+                    'upload_path' => $uploadedPath,
+                    'uploaded_filename' => $archiveFilename,
+                ],
+                'archive_filename' => $archiveFilename,
+                'status' => 'staged',
+                'validation_status' => 'pending',
+                'scan_status' => 'pending',
+                'created_by_user_id' => $userId,
+            ]);
+
+            $stagingRoot = $this->reviewStagingRoot($review);
+            File::ensureDirectoryExists($stagingRoot);
+
+            $stagedArchivePath = $stagingRoot.DIRECTORY_SEPARATOR.$archiveFilename;
+            if (! File::move($absoluteUploadedPath, $stagedArchivePath)) {
+                throw new RuntimeException("Unable to move uploaded plugin archive [{$archiveFilename}] into review staging.");
+            }
+
+            $archiveSha256 = hash_file('sha256', $stagedArchivePath) ?: null;
+
+            $review->update([
+                'archive_path' => $stagedArchivePath,
+                'archive_sha256' => $archiveSha256,
+            ]);
+
+            $extractRoot = $stagingRoot.DIRECTORY_SEPARATOR.'extracted';
+            File::ensureDirectoryExists($extractRoot);
+            $pluginPath = $this->extractPluginArchive($stagedArchivePath, $extractRoot);
+
+            return $this->refreshInstallReview(
+                $review->fresh(),
+                sourcePath: $sourceReference,
+                stagingPath: $stagingRoot,
+                extractedPath: $pluginPath,
+                archivePath: $stagedArchivePath,
+                archiveFilename: $archiveFilename,
+            );
+        } catch (Throwable $exception) {
+            if (is_dir($stagingRoot)) {
+                $this->deleteDirectoryOrFail($stagingRoot, "plugin review staging directory [{$stagingRoot}]");
+            }
+
+            if (is_file($absoluteUploadedPath)) {
+                $this->deleteFileOrFail($absoluteUploadedPath, "uploaded plugin archive [{$archiveFilename}]");
+            }
+
+            if ($review?->exists) {
+                $review->delete();
+            }
+
+            throw $exception;
+        }
+    }
+
+    public function stageGithubReleaseReview(string $releaseUrl, string $expectedSha256, ?int $userId = null): PluginInstallReview
+    {
+        $metadata = $this->parseGithubReleaseUrl($releaseUrl);
+        $expectedSha256 = $this->normalizeSha256($expectedSha256, 'Expected GitHub release SHA-256');
+
+        $review = PluginInstallReview::query()->create([
+            'source_type' => 'github_release',
+            'source_path' => $releaseUrl,
+            'source_origin' => "{$metadata['repository']}@{$metadata['tag']}",
+            'source_metadata' => $metadata,
+            'archive_filename' => $metadata['asset_name'],
+            'expected_archive_sha256' => $expectedSha256,
+            'status' => 'staged',
+            'validation_status' => 'pending',
+            'scan_status' => 'pending',
+            'created_by_user_id' => $userId,
+        ]);
+
+        $stagingRoot = $this->reviewStagingRoot($review);
+        try {
+            File::ensureDirectoryExists($stagingRoot);
+
+            $stagedArchivePath = $stagingRoot.DIRECTORY_SEPARATOR.$metadata['asset_name'];
+            $this->downloadGithubReleaseArchive($releaseUrl, $stagedArchivePath);
+            $this->assertArchiveSizeWithinLimit($stagedArchivePath, $releaseUrl);
+
+            $archiveSha256 = hash_file('sha256', $stagedArchivePath) ?: null;
+            if (! $archiveSha256 || ! hash_equals($expectedSha256, $archiveSha256)) {
+                throw new RuntimeException("GitHub release checksum mismatch for [{$metadata['asset_name']}].");
+            }
+
+            $review->update([
+                'archive_path' => $stagedArchivePath,
+                'archive_sha256' => $archiveSha256,
+            ]);
+
+            $extractRoot = $stagingRoot.DIRECTORY_SEPARATOR.'extracted';
+            File::ensureDirectoryExists($extractRoot);
+            $pluginPath = $this->extractPluginArchive($stagedArchivePath, $extractRoot);
+
+            return $this->refreshInstallReview(
+                $review->fresh(),
+                sourcePath: $releaseUrl,
+                stagingPath: $stagingRoot,
+                extractedPath: $pluginPath,
+                archivePath: $stagedArchivePath,
+                archiveFilename: $metadata['asset_name'],
+            );
+        } catch (Throwable $exception) {
+            if (is_dir($stagingRoot)) {
+                File::deleteDirectory($stagingRoot);
+            }
+
+            $review->delete();
+
+            throw $exception;
+        }
     }
 
     public function scanInstallReview(PluginInstallReview $review): PluginInstallReview
@@ -281,12 +447,14 @@ class PluginManager
 
         $targetPath = $this->managedPluginDirectory().DIRECTORY_SEPARATOR.$review->plugin_id;
         $existingPlugin = $this->findPluginById($review->plugin_id);
+        $usesExistingManagedDirectory = $review->source_type === 'local_directory'
+            && $this->normalizeRealPath((string) $review->source_path) === $this->normalizeRealPath($targetPath);
+        $replacingExistingPlugin = is_dir($targetPath) && ! $usesExistingManagedDirectory;
+        $existingPluginWasEnabled = (bool) $existingPlugin?->enabled;
+
         if ($existingPlugin?->hasActiveRuns()) {
             throw new RuntimeException("Plugin [{$review->plugin_id}] has active runs and cannot be replaced right now.");
         }
-
-        $usesExistingManagedDirectory = $review->source_type === 'local_directory'
-            && $this->normalizeRealPath((string) $review->source_path) === $this->normalizeRealPath($targetPath);
 
         if (! $usesExistingManagedDirectory) {
             File::ensureDirectoryExists(dirname($targetPath));
@@ -301,18 +469,32 @@ class PluginManager
                 throw new RuntimeException("Failed to copy reviewed plugin files into the incoming staging area for [{$targetPath}].");
             }
 
-            if (is_dir($targetPath) && ! File::moveDirectory($targetPath, $backupPath)) {
-                File::deleteDirectory($incomingPath);
-                throw new RuntimeException("Failed to prepare the existing plugin directory [{$targetPath}] for replacement.");
+            if ($replacingExistingPlugin) {
+                if (! File::copyDirectory($targetPath, $backupPath)) {
+                    File::deleteDirectory($incomingPath);
+                    throw new RuntimeException("Failed to back up the existing plugin directory [{$targetPath}] before update.");
+                }
+
+                if (! File::deleteDirectory($targetPath)) {
+                    File::deleteDirectory($incomingPath);
+                    File::deleteDirectory($backupPath);
+                    throw new RuntimeException("Failed to remove the existing plugin directory [{$targetPath}] before update.");
+                }
             }
 
-            if (! File::moveDirectory($incomingPath, $targetPath)) {
+            if (! File::copyDirectory($incomingPath, $targetPath)) {
+                File::deleteDirectory($targetPath);
+
                 if (is_dir($backupPath)) {
-                    File::moveDirectory($backupPath, $targetPath);
+                    File::copyDirectory($backupPath, $targetPath);
                 }
+
+                File::deleteDirectory($incomingPath);
 
                 throw new RuntimeException("Failed to install reviewed plugin files into [{$targetPath}].");
             }
+
+            File::deleteDirectory($incomingPath);
 
             if (is_dir($backupPath)) {
                 File::deleteDirectory($backupPath);
@@ -341,10 +523,20 @@ class PluginManager
 
         if ($trust) {
             $plugin = $this->trust($plugin->fresh(), $userId, $notes);
+
+            if ($replacingExistingPlugin && $existingPluginWasEnabled) {
+                $plugin->update(['enabled' => true]);
+                $plugin = $plugin->fresh();
+            }
+
             $review->update([
                 'status' => 'installed',
                 'extension_plugin_id' => $plugin->id,
             ]);
+        }
+
+        if ($review->source_type === 'uploaded_archive') {
+            $this->cleanupInstalledUploadedReview($review->fresh());
         }
 
         return $review->fresh();
@@ -369,11 +561,14 @@ class PluginManager
         }
 
         if ($review->staging_path && is_dir($review->staging_path)) {
-            File::deleteDirectory($review->staging_path);
+            $this->deleteDirectoryOrFail($review->staging_path, "plugin review staging directory [{$review->staging_path}]");
         }
 
         $review->update([
             'status' => 'discarded',
+            'archive_path' => null,
+            'staging_path' => null,
+            'extracted_path' => null,
         ]);
     }
 
@@ -1099,7 +1294,7 @@ class PluginManager
             return false;
         }
 
-        return $review->source_type !== 'local_dev';
+        return ! ($review->source_type === 'local_dev' && config('plugins.install_mode') === 'dev');
     }
 
     private function reviewStagingRoot(PluginInstallReview $review): string
@@ -1118,6 +1313,148 @@ class PluginManager
         $resolved = realpath($path);
 
         return $resolved !== false ? $resolved : $path;
+    }
+
+    private function assertDevSourceAllowed(string $sourcePath): void
+    {
+        if (config('plugins.install_mode') !== 'dev') {
+            throw new RuntimeException('Dev-source plugin reviews are only available when PLUGIN_INSTALL_MODE=dev.');
+        }
+
+        if (! $this->isPathWithinConfiguredDirectories($sourcePath, config('plugins.dev_directories', []))) {
+            throw new RuntimeException('Dev-source plugin reviews must come from a configured PLUGIN_DEV_DIRECTORIES path.');
+        }
+    }
+
+    private function parseGithubReleaseUrl(string $releaseUrl): array
+    {
+        $parts = parse_url($releaseUrl);
+        if (! is_array($parts)) {
+            throw new RuntimeException('GitHub release URL is not valid.');
+        }
+
+        $host = Str::lower((string) ($parts['host'] ?? ''));
+        if (! in_array($host, config('plugins.github.allowed_hosts', ['github.com']), true)) {
+            throw new RuntimeException("GitHub release URL host [{$host}] is not allowed.");
+        }
+
+        $path = trim((string) ($parts['path'] ?? ''), '/');
+        $segments = explode('/', $path);
+        if (count($segments) < 6 || $segments[2] !== 'releases' || $segments[3] !== 'download') {
+            throw new RuntimeException('GitHub release URL must use the /owner/repo/releases/download/tag/asset pattern.');
+        }
+
+        return [
+            'host' => $host,
+            'owner' => $segments[0],
+            'repo' => $segments[1],
+            'repository' => $segments[0].'/'.$segments[1],
+            'tag' => $segments[4],
+            'asset_name' => end($segments),
+            'release_url' => $releaseUrl,
+        ];
+    }
+
+    private function normalizeSha256(string $value, string $label): string
+    {
+        $normalized = Str::lower(trim($value));
+        if (! preg_match('/^[a-f0-9]{64}$/', $normalized)) {
+            throw new RuntimeException("{$label} must be a 64-character hexadecimal SHA-256 string.");
+        }
+
+        return $normalized;
+    }
+
+    private function downloadGithubReleaseArchive(string $releaseUrl, string $destinationPath): void
+    {
+        $response = Http::timeout((int) config('plugins.github.download_timeout', 60))
+            ->get($releaseUrl);
+
+        if (! $response->successful()) {
+            throw new RuntimeException("Failed to download GitHub release archive from [{$releaseUrl}].");
+        }
+
+        File::put($destinationPath, $response->body());
+    }
+
+    private function assertArchiveSizeWithinLimit(string $archivePath, string $displayPath): void
+    {
+        $size = filesize($archivePath);
+        $limit = (int) config('plugins.archive_limits.max_archive_bytes', 50 * 1024 * 1024);
+
+        if ($size !== false && $limit > 0 && $size > $limit) {
+            throw new RuntimeException("Plugin archive [{$displayPath}] exceeds the maximum allowed archive size.");
+        }
+    }
+
+    private function guardArchiveEntryBudget(int &$fileCount, int &$byteCount, int $entrySize, string $archivePath): void
+    {
+        $maxFileCount = (int) config('plugins.archive_limits.max_file_count', 500);
+        $maxExtractedBytes = (int) config('plugins.archive_limits.max_extracted_bytes', 100 * 1024 * 1024);
+
+        $fileCount++;
+        $byteCount += max($entrySize, 0);
+
+        if ($maxFileCount > 0 && $fileCount > $maxFileCount) {
+            throw new RuntimeException("Plugin archive [{$archivePath}] contains too many files.");
+        }
+
+        if ($maxExtractedBytes > 0 && $byteCount > $maxExtractedBytes) {
+            throw new RuntimeException("Plugin archive [{$archivePath}] exceeds the maximum extracted payload size.");
+        }
+    }
+
+    private function isPathWithinConfiguredDirectories(string $path, array $directories): bool
+    {
+        foreach ($directories as $directory) {
+            $prefix = rtrim((string) $directory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
+            if ($prefix !== DIRECTORY_SEPARATOR && Str::startsWith($path, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function assertAbsolutePathWithinRoot(string $path, string $root, string $errorMessage): void
+    {
+        $normalizedRoot = rtrim($root, DIRECTORY_SEPARATOR);
+        $normalizedPath = rtrim($path, DIRECTORY_SEPARATOR);
+
+        if ($normalizedPath !== $normalizedRoot && ! Str::startsWith($normalizedPath, $normalizedRoot.DIRECTORY_SEPARATOR)) {
+            throw new RuntimeException($errorMessage);
+        }
+    }
+
+    private function deleteFileOrFail(string $path, string $displayPath): void
+    {
+        if (is_file($path) && ! File::delete($path)) {
+            throw new RuntimeException("Unable to delete {$displayPath}.");
+        }
+    }
+
+    private function deleteDirectoryOrFail(string $path, string $displayPath): void
+    {
+        if (is_dir($path) && ! File::deleteDirectory($path)) {
+            throw new RuntimeException("Unable to delete {$displayPath}.");
+        }
+    }
+
+    private function cleanupInstalledUploadedReview(PluginInstallReview $review): void
+    {
+        if ($review->staging_path && is_dir($review->staging_path)) {
+            $this->deleteDirectoryOrFail($review->staging_path, "plugin review staging directory [{$review->staging_path}]");
+        }
+
+        if ($review->archive_path && is_file($review->archive_path)) {
+            $this->deleteFileOrFail($review->archive_path, "reviewed plugin archive [{$review->archive_path}]");
+        }
+
+        $review->update([
+            'archive_path' => null,
+            'staging_path' => null,
+            'extracted_path' => null,
+        ]);
     }
 
     private function refreshInstallReview(
@@ -1205,6 +1542,9 @@ class PluginManager
 
     private function extractZipArchiveSafely(ZipArchive $zip, string $extractRoot, string $archivePath): void
     {
+        $fileCount = 0;
+        $byteCount = 0;
+
         for ($index = 0; $index < $zip->numFiles; $index++) {
             $stat = $zip->statIndex($index);
             if (! is_array($stat) || ! isset($stat['name'])) {
@@ -1228,6 +1568,8 @@ class PluginManager
                 continue;
             }
 
+            $this->guardArchiveEntryBudget($fileCount, $byteCount, (int) ($stat['size'] ?? 0), $archivePath);
+
             $stream = $zip->getStream((string) $stat['name']);
             if ($stream === false) {
                 throw new RuntimeException("Plugin archive [{$archivePath}] contains an unreadable file entry [{$stat['name']}].");
@@ -1249,6 +1591,8 @@ class PluginManager
 
     private function extractPharArchiveSafely(PharData $phar, string $archiveToExtract, string $extractRoot, string $displayArchivePath): void
     {
+        $fileCount = 0;
+        $byteCount = 0;
         $iterator = new \RecursiveIteratorIterator($phar, \RecursiveIteratorIterator::SELF_FIRST);
 
         foreach ($iterator as $entry) {
@@ -1268,6 +1612,8 @@ class PluginManager
             if (! $entry->isFile()) {
                 throw new RuntimeException("Plugin archive [{$displayArchivePath}] contains an unsupported entry type [{$relativePath}].");
             }
+
+            $this->guardArchiveEntryBudget($fileCount, $byteCount, (int) $entry->getSize(), $displayArchivePath);
 
             $contents = file_get_contents($entry->getPathname());
             if ($contents === false) {
@@ -1342,15 +1688,12 @@ class PluginManager
     private function determineSourceType(string $pluginPath, ExtensionPlugin $existing): string
     {
         if (in_array($existing->source_type, config('plugins.source_types', []), true)
-            && $existing->source_type === 'staged_archive') {
+            && in_array($existing->source_type, ['staged_archive', 'github_release', 'uploaded_archive'], true)) {
             return $existing->source_type;
         }
 
-        foreach (config('plugins.dev_directories', []) as $directory) {
-            $directory = rtrim((string) $directory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
-            if ($directory !== DIRECTORY_SEPARATOR && Str::startsWith($pluginPath, $directory)) {
-                return 'local_dev';
-            }
+        if ($this->isPathWithinConfiguredDirectories($pluginPath, config('plugins.dev_directories', []))) {
+            return 'local_dev';
         }
 
         return 'local_directory';

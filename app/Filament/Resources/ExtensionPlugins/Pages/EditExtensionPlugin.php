@@ -75,8 +75,8 @@ class EditExtensionPlugin extends EditRecord
 
                     Notification::make()
                         ->success()
-                        ->title('Install review staged')
-                        ->body("Review #{$review->id} is ready for ClamAV scan and approval in Install Reviews.")
+                        ->title('Plugin install staged')
+                        ->body("Plugin install #{$review->id} is ready for ClamAV scan and approval in Plugin Installs.")
                         ->send();
                 }),
             Action::make('enable')

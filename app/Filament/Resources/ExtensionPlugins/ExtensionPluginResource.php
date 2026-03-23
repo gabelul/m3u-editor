@@ -33,11 +33,11 @@ class ExtensionPluginResource extends Resource
 
     protected static ?string $recordTitleAttribute = 'name';
 
-    protected static ?string $label = 'Plugin';
+    protected static ?string $label = 'Extension';
 
-    protected static ?string $pluralLabel = 'Plugins';
+    protected static ?string $pluralLabel = 'Extensions';
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Tools';
+    protected static string|\UnitEnum|null $navigationGroup = 'Extensions';
 
     public static function canAccess(): bool
     {
@@ -51,7 +51,7 @@ class ExtensionPluginResource extends Resource
 
     public static function getNavigationSort(): ?int
     {
-        return 5;
+        return 2;
     }
 
     public static function form(Schema $schema): Schema

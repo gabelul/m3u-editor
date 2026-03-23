@@ -9,6 +9,7 @@ use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Illuminate\Database\Eloquent\Model;
+use Throwable;
 
 class EditPluginInstallReview extends EditRecord
 {
@@ -29,20 +30,29 @@ class EditPluginInstallReview extends EditRecord
                 ->label('Run ClamAV Scan')
                 ->icon('heroicon-o-shield-check')
                 ->action(function () use ($record): void {
-                    $review = app(PluginManager::class)->scanInstallReview($record);
+                    try {
+                        $review = app(PluginManager::class)->scanInstallReview($record);
 
-                    Notification::make()
-                        ->title('Scan completed')
-                        ->body($review->scan_summary ?: "Scan status: {$review->scan_status}")
-                        ->color($review->scan_status === 'clean' ? 'success' : 'warning')
-                        ->send();
+                        Notification::make()
+                            ->title('Scan completed')
+                            ->body($review->scan_summary ?: "Scan status: {$review->scan_status}")
+                            ->color($review->scan_status === 'clean' ? 'success' : 'warning')
+                            ->send();
 
-                    $this->refreshFormData([
-                        'status',
-                        'scan_status',
-                        'scan_summary',
-                        'scan_details_json',
-                    ]);
+                        $this->refreshFormData([
+                            'status',
+                            'scan_status',
+                            'scan_summary',
+                            'scan_details_json',
+                        ]);
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->danger()
+                            ->title('Scan failed')
+                            ->body($exception->getMessage())
+                            ->persistent()
+                            ->send();
+                    }
                 }),
             Action::make('approve')
                 ->label('Install Review')
@@ -50,15 +60,24 @@ class EditPluginInstallReview extends EditRecord
                 ->color('success')
                 ->requiresConfirmation()
                 ->action(function () use ($record): void {
-                    $review = app(PluginManager::class)->approveInstallReview($record, false, auth()->id());
+                    try {
+                        $review = app(PluginManager::class)->approveInstallReview($record, false, auth()->id());
 
-                    Notification::make()
-                        ->success()
-                        ->title('Plugin installed')
-                        ->body("Install review #{$review->id} installed [{$review->plugin_id}].")
-                        ->send();
+                        Notification::make()
+                            ->success()
+                            ->title('Plugin installed')
+                            ->body("Plugin install #{$review->id} installed [{$review->plugin_id}].")
+                            ->send();
 
-                    $this->refreshFormData(['status', 'installed_path', 'installed_at']);
+                        $this->refreshFormData(['status', 'installed_path', 'installed_at']);
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->danger()
+                            ->title('Plugin install failed')
+                            ->body($exception->getMessage())
+                            ->persistent()
+                            ->send();
+                    }
                 }),
             Action::make('install_and_trust')
                 ->label('Install And Trust')
@@ -66,15 +85,24 @@ class EditPluginInstallReview extends EditRecord
                 ->color('success')
                 ->requiresConfirmation()
                 ->action(function () use ($record): void {
-                    $review = app(PluginManager::class)->approveInstallReview($record, true, auth()->id());
+                    try {
+                        $review = app(PluginManager::class)->approveInstallReview($record, true, auth()->id());
 
-                    Notification::make()
-                        ->success()
-                        ->title('Plugin installed and trusted')
-                        ->body("Install review #{$review->id} installed and trusted [{$review->plugin_id}].")
-                        ->send();
+                        Notification::make()
+                            ->success()
+                            ->title('Plugin installed and trusted')
+                            ->body("Plugin install #{$review->id} installed and trusted [{$review->plugin_id}].")
+                            ->send();
 
-                    $this->refreshFormData(['status', 'installed_path', 'installed_at']);
+                        $this->refreshFormData(['status', 'installed_path', 'installed_at']);
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->danger()
+                            ->title('Plugin install failed')
+                            ->body($exception->getMessage())
+                            ->persistent()
+                            ->send();
+                    }
                 }),
             Action::make('reject')
                 ->label('Reject Review')
@@ -82,15 +110,24 @@ class EditPluginInstallReview extends EditRecord
                 ->color('danger')
                 ->requiresConfirmation()
                 ->action(function () use ($record): void {
-                    $review = app(PluginManager::class)->rejectInstallReview($record, auth()->id());
+                    try {
+                        $review = app(PluginManager::class)->rejectInstallReview($record, auth()->id());
 
-                    Notification::make()
-                        ->success()
-                        ->title('Install review rejected')
-                        ->body("Install review #{$review->id} was rejected.")
-                        ->send();
+                        Notification::make()
+                            ->success()
+                            ->title('Plugin install rejected')
+                            ->body("Plugin install #{$review->id} was rejected.")
+                            ->send();
 
-                    $this->refreshFormData(['status', 'review_notes']);
+                        $this->refreshFormData(['status', 'review_notes']);
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->danger()
+                            ->title('Reject review failed')
+                            ->body($exception->getMessage())
+                            ->persistent()
+                            ->send();
+                    }
                 }),
             Action::make('discard')
                 ->label('Discard Review')
@@ -99,14 +136,23 @@ class EditPluginInstallReview extends EditRecord
                 ->hidden(fn () => $record->status === 'installed')
                 ->requiresConfirmation()
                 ->action(function () use ($record): void {
-                    app(PluginManager::class)->discardInstallReview($record);
+                    try {
+                        app(PluginManager::class)->discardInstallReview($record);
 
-                    Notification::make()
-                        ->success()
-                        ->title('Install review discarded')
-                        ->send();
+                        Notification::make()
+                            ->success()
+                            ->title('Plugin install discarded')
+                            ->send();
 
-                    $this->redirect(PluginInstallReviewResource::getUrl());
+                        $this->redirect(PluginInstallReviewResource::getUrl());
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->danger()
+                            ->title('Discard review failed')
+                            ->body($exception->getMessage())
+                            ->persistent()
+                            ->send();
+                    }
                 }),
         ];
     }

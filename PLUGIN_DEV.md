@@ -3,6 +3,14 @@
 `m3u-editor` now ships with a trusted-local plugin kernel for extension work on this fork.
 Normal use should go through the reviewed-install flow for private local plugins or archives.
 
+Install review currently starts from either:
+
+- a filesystem path the host/container can already read, or
+- a browser-uploaded archive stored by the host, or
+- a published GitHub release asset URL
+
+In Docker deployments, "local" means a path that is visible inside the container.
+
 ## Principles
 
 - Plugins extend published capabilities instead of reaching into arbitrary internals.
@@ -44,15 +52,29 @@ The scaffold creates:
 
 - `plugins/<plugin-id>/plugin.json`
 - `plugins/<plugin-id>/Plugin.php`
+- `plugins/<plugin-id>/README.md`
+- `plugins/<plugin-id>/.github/workflows/plugin-ci.yml`
+- `plugins/<plugin-id>/scripts/package-plugin.sh`
+- `plugins/<plugin-id>/scripts/validate-plugin.php`
+- `plugins/<plugin-id>/AGENTS.md`
+- `plugins/<plugin-id>/CLAUDE.md`
 
-The generated plugin is designed to validate immediately and includes a simple `health_check` action so operators can exercise it right away from `Tools -> Extensions`.
+The generated plugin is designed to validate immediately and includes a simple `health_check` action so operators can exercise it right away from `Extensions -> Extensions`.
+Use `--bare` when you only want the runtime plugin files without the author starter kit.
 
 ## Install Modes
 
 - `normal`: reviewed local directories and reviewed archives are the supported install path
-- `dev`: keeps direct folder discovery for configured author directories
+- `dev`: keeps direct folder discovery for configured author directories only
 
 Self-hosted private plugins do not need dev mode if they go through reviewed install.
+`dev` mode is for local authoring only and should not be used on production servers.
+
+Dev mode limitations:
+
+- only plugins under configured `PLUGIN_DEV_DIRECTORIES` qualify as `local_dev`
+- it is meant for local authoring convenience, not production installs
+- private production plugins should still use reviewed install in `normal` mode
 
 ## Manifest
 
@@ -132,6 +154,8 @@ Phase 1 source types:
 
 - `local_directory`
 - `staged_archive`
+- `github_release`
+- `uploaded_archive`
 - `local_dev`
 
 Typical local-directory review flow:
@@ -142,10 +166,35 @@ php artisan plugins:scan-install <review-id>
 php artisan plugins:approve-install <review-id> --trust
 ```
 
+If you use the UI for a local directory or local archive, enter a path that the host/container can already read.
+For private plugins in Docker, the recommended path is the browser upload action instead of a container-visible filesystem path.
+
 Typical archive review flow:
 
 ```bash
 php artisan plugins:stage-archive /absolute/path/to/my-plugin.zip
+php artisan plugins:scan-install <review-id>
+php artisan plugins:approve-install <review-id> --trust
+```
+
+Typical browser upload review flow:
+
+1. Open `Extensions -> Plugin Installs`.
+2. Choose `Upload Plugin Archive`.
+3. Upload the plugin `.zip`, `.tar`, `.tar.gz`, or `.tgz` archive from your browser.
+4. Run the scan and approve/trust actions from the review page.
+
+Browser upload stores the archive on the host's private local disk just long enough to stage the review.
+The host computes the archive checksum itself, then moves the archive into review staging and applies the same validation, ClamAV scan, approval, trust, and integrity rules as any other reviewed install source.
+In Docker, keep `storage/app` on persistent storage if reviewers need uploaded or staged plugin reviews to survive container restarts.
+If a reviewed install has the same plugin id as an already-installed plugin, approving it updates the existing plugin files in place. `Install And Trust` re-trusts the updated files and restores the enabled state if the plugin was already active.
+
+Typical GitHub release review flow:
+
+```bash
+php artisan plugins:stage-github-release \
+  https://github.com/<owner>/<repo>/releases/download/<tag>/plugin.zip \
+  --sha256=<published-sha256>
 php artisan plugins:scan-install <review-id>
 php artisan plugins:approve-install <review-id> --trust
 ```
@@ -169,6 +218,26 @@ Scan statuses:
 - `scanner_unavailable`
 
 ClamAV is required to trust reviewed installs in normal mode.
+
+### Docker scanner modes
+
+The dev Docker stack defaults to the fake scanner so normal UI work stays fast.
+
+To run a real local ClamAV scan in Docker, rebuild the dev image with ClamAV enabled and switch the driver to `clamav`:
+
+```bash
+INSTALL_CLAMAV=true \
+PLUGIN_SCAN_DRIVER=clamav \
+CLAMAV_UPDATE_DEFINITIONS=true \
+docker compose -f docker-compose.dev.yml up --build
+```
+
+Notes:
+
+- real scan uses `clamscan`, not `clamd`
+- ClamAV signatures are stored in the Docker volume mounted at `/var/lib/clamav`
+- if signatures are missing, startup will try to initialize them before the app boots
+- production or review environments should keep real scanning enabled before trust
 
 ## Lifecycle
 
@@ -348,6 +417,7 @@ Supported schema field types:
 - `php artisan plugins:validate epg-repair`
 - `php artisan plugins:stage-directory <path>`
 - `php artisan plugins:stage-archive <archive>`
+- `php artisan plugins:stage-github-release <url> --sha256=<hash>`
 - `php artisan plugins:scan-install <review-id>`
 - `php artisan plugins:approve-install <review-id> [--trust]`
 - `php artisan plugins:reject-install <review-id>`
@@ -379,9 +449,9 @@ Operational rule:
 ## Admin Workflow
 
 1. Run plugin discovery.
-2. Open `Tools -> Extensions`.
+2. Open `Extensions -> Overview`.
 3. Validate a plugin.
-4. If needed, stage the current plugin files for review or use Install Reviews.
+4. If needed, stage the current plugin files for review or use Plugin Installs.
 5. Review permissions, schema, integrity, and ClamAV result.
 6. Trust it.
 7. Configure settings.
@@ -394,9 +464,51 @@ Operational rule:
 1. Run `php artisan make:plugin "Your Plugin Name"`.
 2. Edit the generated `plugin.json` capabilities, hooks, settings, and ownership declarations.
 3. Replace the generated `health_check` behavior with the real plugin logic in `Plugin.php`.
-4. Stage it through reviewed install or use dev mode while authoring.
-5. Run discovery, validation, scan, and trust.
-6. Open `Tools -> Extensions` and test the scaffold from the UI.
+4. Update the generated README, package script, and GitHub workflow to match your release process.
+5. Stage it through reviewed install or use dev mode only while authoring from a configured dev directory.
+6. Run discovery, validation, scan, and trust.
+7. Open `Extensions -> Extensions` and test the scaffold from the UI.
+
+## Quick Start For Reviewers
+
+Create a plugin:
+
+```bash
+php artisan make:plugin "Acme XML Tools"
+```
+
+Package it:
+
+```bash
+cd plugins/acme-xml-tools
+bash scripts/package-plugin.sh
+```
+
+Install it privately from a local zip:
+
+```bash
+php artisan plugins:stage-archive /absolute/path/to/acme-xml-tools.zip
+php artisan plugins:scan-install <review-id>
+php artisan plugins:approve-install <review-id> --trust
+```
+
+Install it privately from the UI:
+
+1. Open `Extensions -> Plugin Installs`.
+2. Click `Upload Plugin Archive`.
+3. Upload the packaged archive from `dist/`.
+4. Run the review scan.
+5. Install and trust it.
+
+Install it from GitHub:
+
+```bash
+php artisan plugins:stage-github-release \
+  https://github.com/<owner>/<repo>/releases/download/<tag>/acme-xml-tools.zip \
+  --sha256=<published-sha256>
+php artisan plugins:scan-install <review-id>
+php artisan plugins:approve-install <review-id> --trust
+```
 
 ## Execution Model
 

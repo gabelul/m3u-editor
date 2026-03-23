@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Plugins\PluginManager;
 use Illuminate\Console\Command;
+use Throwable;
 
 class ApprovePluginInstall extends Command
 {
@@ -20,12 +21,18 @@ class ApprovePluginInstall extends Command
             return self::FAILURE;
         }
 
-        $review = $pluginManager->approveInstallReview(
-            $review,
-            (bool) $this->option('trust'),
-            auth()->id(),
-            $this->option('notes') ? (string) $this->option('notes') : null,
-        );
+        try {
+            $review = $pluginManager->approveInstallReview(
+                $review,
+                (bool) $this->option('trust'),
+                auth()->id(),
+                $this->option('notes') ? (string) $this->option('notes') : null,
+            );
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
 
         $this->info("Review #{$review->id} installed plugin [{$review->plugin_id}].");
         $this->line("Review status: {$review->status}");

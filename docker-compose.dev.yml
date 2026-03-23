@@ -4,6 +4,8 @@
 #
 # Usage:
 #   docker compose -f docker-compose.dev.yml up --build
+#   INSTALL_CLAMAV=true PLUGIN_SCAN_DRIVER=clamav CLAMAV_UPDATE_DEFINITIONS=true \
+#     docker compose -f docker-compose.dev.yml up --build
 #   docker compose -f docker-compose.dev.yml down -v  (clean teardown)
 ##
 services:
@@ -13,6 +15,7 @@ services:
       dockerfile: Dockerfile
       args:
         INSTALL_DEV_DEPENDENCIES: "true"
+        INSTALL_CLAMAV: ${INSTALL_CLAMAV:-false}
     container_name: m3u-editor-dev
     environment:
       # Timezone
@@ -50,12 +53,21 @@ services:
 
       # ML Matcher (our new service)
       - ML_MATCHER_ENABLED=true
+
+      # Plugin malware scanning
+      - PLUGIN_SCAN_DRIVER=${PLUGIN_SCAN_DRIVER:-fake}
+      - CLAMAV_BINARY=${CLAMAV_BINARY:-clamscan}
+      - CLAMAV_UPDATE_DEFINITIONS=${CLAMAV_UPDATE_DEFINITIONS:-false}
+      - CLAMAV_TIMEOUT=${CLAMAV_TIMEOUT:-60}
     volumes:
       # Persistent config data (Docker-managed volume — avoids ExFAT fd limits)
       - configdata_dev:/var/www/config
 
       # PostgreSQL data
       - pgdata_dev:/var/lib/postgresql/data
+
+      # Optional ClamAV signature cache for real plugin scan testing
+      - clamavdata_dev:/var/lib/clamav
     restart: unless-stopped
     ports:
       - "36450:36450"  # App (offset from production 36400)
@@ -84,6 +96,7 @@ services:
       - MAIL_MAILER=array
       - PULSE_ENABLED=false
       - QUEUE_CONNECTION=sync
+      - PLUGIN_SCAN_DRIVER=fake
       - REDIS_HOST=127.0.0.1
       - REDIS_PASSWORD=
       - REDIS_SERVER_PORT=36790
@@ -98,4 +111,6 @@ volumes:
   pgdata_dev:
     driver: local
   configdata_dev:
+    driver: local
+  clamavdata_dev:
     driver: local
