@@ -26,29 +26,31 @@ class SortService
             default => $column,
         };
 
+        $lowerOrderByColumn = "LOWER({$orderByColumn})";
+
         // MySQL (8+)
         if ($driver === 'mysql') {
-            DB::statement("UPDATE channels c JOIN (SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(title_custom, title) {$direction}) AS rn FROM channels WHERE group_id = ?) t ON c.id = t.id SET c.sort = t.rn", [$record->id]);
+            DB::statement("UPDATE channels c JOIN (SELECT id, ROW_NUMBER() OVER (ORDER BY LOWER({$orderByColumn}) {$direction}) AS rn FROM channels WHERE group_id = ?) t ON c.id = t.id SET c.sort = t.rn", [$record->id]);
 
             return;
         }
 
         // Postgres
         if (str_starts_with($driver, 'pgsql') || $driver === 'postgresql' || $driver === 'postgres') {
-            DB::statement("UPDATE channels SET sort = t.rn FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY {$orderByColumn} {$direction}) AS rn FROM channels WHERE group_id = ?) t WHERE channels.id = t.id", [$record->id]);
+            DB::statement("UPDATE channels SET sort = t.rn FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY {$lowerOrderByColumn} {$direction}) AS rn FROM channels WHERE group_id = ?) t WHERE channels.id = t.id", [$record->id]);
 
             return;
         }
 
         // SQLite
         if ($driver === 'sqlite') {
-            DB::statement("WITH ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY {$orderByColumn} {$direction}) AS rn FROM channels WHERE group_id = ?) UPDATE channels SET sort = (SELECT rn FROM ranked WHERE ranked.id = channels.id) WHERE group_id = ?", [$record->id, $record->id]);
+            DB::statement("WITH ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY {$lowerOrderByColumn} {$direction}) AS rn FROM channels WHERE group_id = ?) UPDATE channels SET sort = (SELECT rn FROM ranked WHERE ranked.id = channels.id) WHERE group_id = ?", [$record->id, $record->id]);
 
             return;
         }
 
         // Fallback: single CASE update
-        $ids = $record->channels()->orderByRaw("{$orderByColumn} {$order}")->pluck('id')->all();
+        $ids = $record->channels()->orderByRaw("{$lowerOrderByColumn} {$direction}")->pluck('id')->all();
         if (empty($ids)) {
             return;
         }
