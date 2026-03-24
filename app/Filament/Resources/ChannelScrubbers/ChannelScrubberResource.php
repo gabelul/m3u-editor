@@ -267,17 +267,22 @@ class ChannelScrubberResource extends Resource
         return [
             TextInput::make('name')
                 ->required()
-                ->columnSpanFull()
-                ->maxLength(255),
+                ->maxLength(255)
+                ->columnSpanFull(),
             Select::make('playlist_id')
                 ->required()
                 ->label('Playlist')
                 ->helperText('Select the playlist whose channels you want to scrub.')
                 ->options(Playlist::where('user_id', Auth::id())->get(['name', 'id'])->pluck('name', 'id'))
-                ->searchable()
-                ->columnSpanFull(),
+                ->searchable(),
+            Toggle::make('recurring')
+                ->label('Recurring')
+                ->inline(false)
+                ->helperText('Automatically run this scrubber after each playlist sync.')
+                ->default(false),
             Section::make('Check Method')
                 ->icon('heroicon-s-signal')
+                ->compact()
                 ->columnSpanFull()
                 ->schema([
                     Radio::make('check_method')
@@ -293,27 +298,28 @@ class ChannelScrubberResource extends Resource
                         ->default('http')
                         ->required(),
                 ]),
-            Grid::make()
-                ->columnSpanFull()
-                ->columns(2)
-                ->schema([
-                    Toggle::make('include_vod')
-                        ->label('Include VOD')
-                        ->helperText('Also check VOD channel links in addition to live channels.')
-                        ->default(false),
-                    Toggle::make('recurring')
-                        ->label('Recurring')
-                        ->helperText('Automatically run this scrubber after each playlist sync.')
-                        ->default(false),
-                ]),
             Section::make('Scan Scope')
                 ->icon('heroicon-s-exclamation-triangle')
+                ->compact()
                 ->columnSpanFull()
                 ->schema([
-                    Toggle::make('scan_all')
-                        ->label('Scan all channels (including disabled)')
-                        ->helperText('By default, only enabled channels are checked. Enabling this will also scan disabled channels. Warning: this can result in a very large number of connections to the provider and significantly longer run times.')
-                        ->default(false),
+                    Grid::make()
+                        ->columnSpanFull()
+                        ->columns(2)
+                        ->schema([
+                            Toggle::make('scan_all')
+                                ->label('Scan all channels (including disabled)')
+                                ->hintIcon(
+                                    'heroicon-s-information-circle',
+                                    tooltip: 'By default, only enabled channels are checked. Enabling this will also scan disabled channels. ',
+                                )
+                                ->helperText('Warning: this can result in a very large number of connections to the provider and significantly longer run times.')
+                                ->default(false),
+                            Toggle::make('include_vod')
+                                ->label('Include VOD')
+                                ->helperText('Also check VOD channel links in addition to live channels.')
+                                ->default(false),
+                        ]),
                 ]),
         ];
     }
