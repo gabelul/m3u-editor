@@ -523,7 +523,7 @@ class CategoryResource extends Resource
                                 ->dispatch(new CategoryFindAndReplace(
                                     user_id: auth()->id(),
                                     use_regex: $data['use_regex'] ?? true,
-                                    find_replace: $data['find_replace'] ?? null,
+                                    find_replace: $data['find_replace'] ?? '',
                                     replace_with: $data['replace_with'] ?? '',
                                     categories: $records,
                                 ));

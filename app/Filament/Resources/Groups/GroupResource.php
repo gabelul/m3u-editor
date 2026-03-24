@@ -567,7 +567,7 @@ class GroupResource extends Resource
                                 ->dispatch(new GroupFindAndReplace(
                                     user_id: auth()->id(),
                                     use_regex: $data['use_regex'] ?? true,
-                                    find_replace: $data['find_replace'] ?? null,
+                                    find_replace: $data['find_replace'] ?? '',
                                     replace_with: $data['replace_with'] ?? '',
                                     groups: $records,
                                 ));
