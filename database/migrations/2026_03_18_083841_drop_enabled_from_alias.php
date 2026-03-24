@@ -12,7 +12,13 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('playlist_aliases', function (Blueprint $table) {
-            $table->dropIndex(['playlist_id', 'enabled']);
+            $index = collect(Schema::getIndexes('playlist_aliases'))
+                ->first(fn ($i) => $i['columns'] === ['playlist_id', 'enabled']);
+
+            if ($index) {
+                $table->dropIndex($index['name']);
+            }
+
             $table->dropColumn('enabled');
             $table->index(['playlist_id']);
         });
