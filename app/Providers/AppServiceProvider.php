@@ -4,18 +4,21 @@ namespace App\Providers;
 
 use App\Console\Commands\NetworkBroadcastEnsure;
 use App\Console\Commands\NetworkBroadcastHeal;
+use App\Enums\Status;
 use App\Events\EpgCreated;
 use App\Events\EpgDeleted;
 use App\Events\EpgUpdated;
 use App\Events\PlaylistCreated;
 use App\Events\PlaylistDeleted;
 use App\Events\PlaylistUpdated;
+use App\Jobs\ProcessChannelScrubber;
 use App\Jobs\SyncMediaServer;
 use App\Livewire\BackupDestinationListRecords;
 use App\Livewire\StreamPlayer;
 use App\Livewire\TmdbSearch;
 use App\Models\Channel;
 use App\Models\ChannelFailover;
+use App\Models\ChannelScrubber;
 use App\Models\CustomPlaylist;
 use App\Models\Epg;
 use App\Models\Group;
@@ -689,6 +692,20 @@ class AppServiceProvider extends ServiceProvider
                 }
 
                 Channel::where('network_id', $network->id)->delete();
+            });
+
+            // ChannelScrubber
+            ChannelScrubber::creating(function (ChannelScrubber $scrubber) {
+                if (! $scrubber->user_id) {
+                    $scrubber->user_id = auth()->id();
+                }
+                $scrubber->uuid = Str::orderedUuid()->toString();
+
+                return $scrubber;
+            });
+            ChannelScrubber::created(function (ChannelScrubber $scrubber) {
+                $scrubber->update(['status' => Status::Processing, 'progress' => 0]);
+                dispatch(new ProcessChannelScrubber($scrubber->id));
             });
 
             // StreamFileSetting

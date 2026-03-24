@@ -16,9 +16,9 @@ return new class extends Migration
         Schema::create('channel_scrubbers', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->uuid('uuid');
+            $table->uuid('uuid')->nullable();
             $table->longText('errors')->nullable();
-            $table->enum('status', ['pending', 'processing', 'completed', 'failed'])->default('pending');
+            $table->enum('status', ['pending', 'processing', 'completed', 'failed', 'cancelled'])->default('pending');
             $table->boolean('processing')->default(false);
             $table->float('progress')->default(0);
             $table->float('sync_time')->nullable();

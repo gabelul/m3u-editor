@@ -8,6 +8,7 @@ enum Status: string
     case Processing = 'processing';
     case Completed = 'completed';
     case Failed = 'failed';
+    case Cancelled = 'cancelled';
 
     public function getColor(): string
     {
@@ -16,6 +17,7 @@ enum Status: string
             self::Processing => 'warning',
             self::Completed => 'success',
             self::Failed => 'danger',
+            self::Cancelled => 'gray',
         };
     }
 }

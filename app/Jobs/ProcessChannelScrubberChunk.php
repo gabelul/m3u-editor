@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\Status;
 use App\Models\Channel;
 use App\Models\ChannelScrubber;
 use Exception;
@@ -40,7 +41,7 @@ class ProcessChannelScrubberChunk implements ShouldQueue
     public function handle(): void
     {
         $scrubber = ChannelScrubber::find($this->scrubberId);
-        if (! $scrubber) {
+        if (! $scrubber || $scrubber->uuid !== $this->batchNo || $scrubber->status === Status::Cancelled) {
             return;
         }
 

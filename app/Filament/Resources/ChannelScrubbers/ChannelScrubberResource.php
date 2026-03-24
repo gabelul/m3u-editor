@@ -160,6 +160,32 @@ class ChannelScrubberResource extends Resource
                     })
                     ->hidden(fn ($record) => $record->status === Status::Processing || $record->status === Status::Pending)
                     ->tooltip('Manually trigger this scrubber to run.'),
+                Action::make('cancel')
+                    ->label('Cancel')
+                    ->icon('heroicon-s-x-circle')
+                    ->button()
+                    ->hiddenLabel()
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalIcon('heroicon-s-x-circle')
+                    ->modalDescription('Cancel this scrubber run? The current run will be abandoned. Any channels already disabled during this run will remain disabled.')
+                    ->modalSubmitActionLabel('Cancel Run')
+                    ->action(function ($record) {
+                        $record->update([
+                            'status' => Status::Cancelled,
+                            'progress' => 0,
+                            'processing' => false,
+                        ]);
+                    })->after(function () {
+                        Notification::make()
+                            ->warning()
+                            ->title('Scrubber run cancelled')
+                            ->body('The run has been cancelled. In-progress checks will complete before stopping.')
+                            ->duration(10000)
+                            ->send();
+                    })
+                    ->hidden(fn ($record) => ! ($record->status === Status::Processing || $record->status === Status::Pending))
+                    ->tooltip('Cancel the in-progress scrubber run.'),
                 Action::make('restart')
                     ->label('Restart Now')
                     ->icon('heroicon-s-arrow-path')
