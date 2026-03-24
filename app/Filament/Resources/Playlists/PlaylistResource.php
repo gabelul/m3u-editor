@@ -2379,8 +2379,8 @@ class PlaylistResource extends Resource
                             : null
                         ),
                 ]),
-            Section::make('Sort Alpha Rules')
-                ->description('Define sort rules that automatically run after each playlist sync. Rules execute in order.')
+            Section::make('Sort Alpha Configs')
+                ->description('Define sort configurations that automatically run after each playlist sync. Configurations execute in order.')
                 ->columnSpanFull()
                 ->collapsible()
                 ->collapsed($creating)
@@ -2399,9 +2399,30 @@ class PlaylistResource extends Resource
                                     'live_groups' => 'Live Groups',
                                     'vod_groups' => 'VOD Groups',
                                 ])
+                                ->live()
                                 ->default('live_groups')
                                 ->required()
-                                ->columnSpan(2),
+                                ->afterStateUpdated(fn (Set $set) => $set('group', ['all']))
+                                ->columnSpan(1),
+                            Select::make('group')
+                                ->label('Groups')
+                                ->options(fn (Get $get, ?Playlist $record): array => [
+                                    'all' => 'All groups',
+                                    ...($record
+                                        ? SourceGroup::where('playlist_id', $record->id)
+                                            ->where('type', match ($get('target')) {
+                                                'vod_groups' => 'vod',
+                                                default => 'live',
+                                            })
+                                            ->orderBy('name')
+                                            ->pluck('name', 'name')
+                                            ->toArray()
+                                        : []),
+                                ])
+                                ->default(['all'])
+                                ->multiple()
+                                ->searchable()
+                                ->columnSpan(3),
                             Select::make('column')
                                 ->label('Sort By')
                                 ->options([
@@ -2423,16 +2444,23 @@ class PlaylistResource extends Resource
                                 ->required()
                                 ->columnSpan(2),
                         ])
-                        ->columns(7)
+                        ->columns(9)
                         ->reorderable()
                         ->reorderableWithButtons()
                         ->collapsible()
                         ->defaultItems(0)
-                        ->addActionLabel('Add sort rule')
-                        ->itemLabel(fn (array $state): ?string => ($state['name'] ?? null)
-                            ? ($state['name'].($state['enabled'] ?? true ? '' : ' (disabled)'))
-                            : null
-                        ),
+                        ->addActionLabel('Add sort config')
+                        ->itemLabel(function (array $state): ?string {
+                            if (empty($state['target'])) {
+                                return null;
+                            }
+                            $targetLabel = $state['target'] === 'vod_groups' ? 'VOD Groups' : 'Live Groups';
+                            $groups = (array) ($state['group'] ?? ['all']);
+                            $groupLabel = \in_array('all', $groups) ? 'All' : implode(', ', $groups);
+                            $disabled = ($state['enabled'] ?? true) ? '' : ' (disabled)';
+
+                            return "{$targetLabel} — {$groupLabel}{$disabled}";
+                        }),
                 ]),
         ];
 

@@ -47,14 +47,24 @@ class RunPlaylistSortAlpha implements ShouldQueue
             $target = $rule['target'] ?? 'live_groups';
             $column = $rule['column'] ?? 'title';
             $order = $rule['sort'] ?? 'ASC';
+            $selectedGroups = (array) ($rule['group'] ?? ['all']);
+            $isAll = empty($selectedGroups) || in_array('all', $selectedGroups);
 
             if ($target === 'live_groups') {
-                $this->playlist->liveGroups()->each(function ($group) use ($column, $order): void {
+                $query = $this->playlist->liveGroups();
+                if (! $isAll) {
+                    $query = $query->whereIn('name_internal', $selectedGroups);
+                }
+                $query->each(function ($group) use ($column, $order): void {
                     SortFacade::bulkSortGroupChannels($group, $order, $column);
                 });
                 $liveRulesRun++;
             } elseif ($target === 'vod_groups') {
-                $this->playlist->vodGroups()->each(function ($group) use ($column, $order): void {
+                $query = $this->playlist->vodGroups();
+                if (! $isAll) {
+                    $query = $query->whereIn('name_internal', $selectedGroups);
+                }
+                $query->each(function ($group) use ($column, $order): void {
                     SortFacade::bulkSortGroupChannels($group, $order, $column);
                 });
                 $vodRulesRun++;
