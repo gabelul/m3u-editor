@@ -9,6 +9,7 @@ use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
+use Throwable;
 
 class PluginInstallActions
 {
@@ -67,17 +68,15 @@ class PluginInstallActions
                         ->helperText('For configured dev directories only. Do not use this path for production installs.'),
                 ])
                 ->action(function (array $data): void {
-                    $review = app(PluginManager::class)->stageDirectoryReview(
-                        (string) $data['path'],
-                        auth()->id(),
-                        (bool) ($data['dev_source'] ?? false),
+                    self::runStagingAction(
+                        callback: fn () => app(PluginManager::class)->stageDirectoryReview(
+                            (string) $data['path'],
+                            auth()->id(),
+                            (bool) ($data['dev_source'] ?? false),
+                        ),
+                        successTitle: 'Plugin install staged',
+                        failureTitle: 'Plugin staging failed',
                     );
-
-                    Notification::make()
-                        ->success()
-                        ->title('Plugin install staged')
-                        ->body("Plugin install #{$review->id} is ready for validation and scan.")
-                        ->send();
                 }),
             Action::make('upload_archive')
                 ->label('Upload Plugin Archive')
@@ -105,16 +104,14 @@ class PluginInstallActions
                         ->helperText('Upload a plugin zip, tar, or tar.gz archive. The server will stage, validate, and scan it through plugin installs.'),
                 ])
                 ->action(function (array $data): void {
-                    $review = app(PluginManager::class)->stageUploadedArchiveReview(
-                        (string) $data['archive_upload'],
-                        auth()->id(),
+                    self::runStagingAction(
+                        callback: fn () => app(PluginManager::class)->stageUploadedArchiveReview(
+                            (string) $data['archive_upload'],
+                            auth()->id(),
+                        ),
+                        successTitle: 'Uploaded plugin archive staged',
+                        failureTitle: 'Plugin upload failed',
                     );
-
-                    Notification::make()
-                        ->success()
-                        ->title('Uploaded plugin archive staged')
-                        ->body("Plugin install #{$review->id} is ready for validation and scan.")
-                        ->send();
                 }),
             Action::make('stage_archive')
                 ->label('Stage Plugin Archive')
@@ -127,16 +124,14 @@ class PluginInstallActions
                         ->helperText('Use a zip/tar path the host/container can already read. This action does not upload files from the browser.'),
                 ])
                 ->action(function (array $data): void {
-                    $review = app(PluginManager::class)->stageArchiveReview(
-                        (string) $data['archive'],
-                        auth()->id(),
+                    self::runStagingAction(
+                        callback: fn () => app(PluginManager::class)->stageArchiveReview(
+                            (string) $data['archive'],
+                            auth()->id(),
+                        ),
+                        successTitle: 'Plugin archive staged',
+                        failureTitle: 'Plugin archive staging failed',
                     );
-
-                    Notification::make()
-                        ->success()
-                        ->title('Plugin archive staged')
-                        ->body("Plugin install #{$review->id} is ready for validation and scan.")
-                        ->send();
                 }),
             Action::make('stage_github_release')
                 ->label('Stage GitHub Release')
@@ -153,18 +148,41 @@ class PluginInstallActions
                         ->helperText('Pin the published release checksum before the host downloads the archive.'),
                 ])
                 ->action(function (array $data): void {
-                    $review = app(PluginManager::class)->stageGithubReleaseReview(
-                        (string) $data['url'],
-                        (string) $data['sha256'],
-                        auth()->id(),
+                    self::runStagingAction(
+                        callback: fn () => app(PluginManager::class)->stageGithubReleaseReview(
+                            (string) $data['url'],
+                            (string) $data['sha256'],
+                            auth()->id(),
+                        ),
+                        successTitle: 'GitHub release staged',
+                        failureTitle: 'GitHub release staging failed',
                     );
-
-                    Notification::make()
-                        ->success()
-                        ->title('GitHub release staged')
-                        ->body("Plugin install #{$review->id} is ready for validation and scan.")
-                        ->send();
                 }),
         ];
+    }
+
+    /**
+     * Execute a plugin staging action and convert staging failures into notifications.
+     *
+     * @param  callable(): \App\Models\PluginInstallReview  $callback
+     */
+    private static function runStagingAction(callable $callback, string $successTitle, string $failureTitle): void
+    {
+        try {
+            $review = $callback();
+
+            Notification::make()
+                ->success()
+                ->title($successTitle)
+                ->body("Plugin install #{$review->id} is ready for validation and scan.")
+                ->send();
+        } catch (Throwable $exception) {
+            Notification::make()
+                ->danger()
+                ->title($failureTitle)
+                ->body($exception->getMessage())
+                ->persistent()
+                ->send();
+        }
     }
 }

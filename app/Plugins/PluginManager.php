@@ -217,27 +217,39 @@ class PluginManager
         ]);
 
         $stagingRoot = $this->reviewStagingRoot($review);
-        File::ensureDirectoryExists($stagingRoot);
+        try {
+            File::ensureDirectoryExists($stagingRoot);
 
-        $stagedArchivePath = $stagingRoot.DIRECTORY_SEPARATOR.basename($archivePath);
-        File::copy($archivePath, $stagedArchivePath);
-        $this->assertArchiveSizeWithinLimit($stagedArchivePath, $archivePath);
-        $review->update([
-            'archive_sha256' => hash_file('sha256', $stagedArchivePath) ?: null,
-        ]);
+            $stagedArchivePath = $stagingRoot.DIRECTORY_SEPARATOR.basename($archivePath);
+            File::copy($archivePath, $stagedArchivePath);
+            $this->assertArchiveSizeWithinLimit($stagedArchivePath, $archivePath);
+            $review->update([
+                'archive_sha256' => hash_file('sha256', $stagedArchivePath) ?: null,
+            ]);
 
-        $extractRoot = $stagingRoot.DIRECTORY_SEPARATOR.'extracted';
-        File::ensureDirectoryExists($extractRoot);
-        $pluginPath = $this->extractPluginArchive($stagedArchivePath, $extractRoot);
+            $extractRoot = $stagingRoot.DIRECTORY_SEPARATOR.'extracted';
+            File::ensureDirectoryExists($extractRoot);
+            $pluginPath = $this->extractPluginArchive($stagedArchivePath, $extractRoot);
 
-        return $this->refreshInstallReview(
-            $review->fresh(),
-            sourcePath: $archivePath,
-            stagingPath: $stagingRoot,
-            extractedPath: $pluginPath,
-            archivePath: $stagedArchivePath,
-            archiveFilename: basename($archivePath),
-        );
+            return $this->refreshInstallReview(
+                $review->fresh(),
+                sourcePath: $archivePath,
+                stagingPath: $stagingRoot,
+                extractedPath: $pluginPath,
+                archivePath: $stagedArchivePath,
+                archiveFilename: basename($archivePath),
+            );
+        } catch (Throwable $exception) {
+            if (is_dir($stagingRoot)) {
+                $this->deleteDirectoryOrFail($stagingRoot, "plugin review staging directory [{$stagingRoot}]");
+            }
+
+            if ($review->exists) {
+                $review->delete();
+            }
+
+            throw $exception;
+        }
     }
 
     public function stageUploadedArchiveReview(string $uploadedPath, ?int $userId = null): PluginInstallReview
