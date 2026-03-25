@@ -47,6 +47,11 @@ class ChannelScrubberResource extends Resource
 
     protected static string|\UnitEnum|null $navigationGroup = 'Playlist';
 
+    public static function canAccess(): bool
+    {
+        return auth()->check() && auth()->user()->canUseScrubber();
+    }
+
     public static function getNavigationSort(): ?int
     {
         return 8;

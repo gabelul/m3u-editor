@@ -55,10 +55,12 @@
                     target="_blank">
                     Releases
                 </x-filament::button>
-                <x-filament::button class="mt-2" color="gray" icon="heroicon-o-list-bullet" tag="a"
-                    href="{{ \App\Filament\Pages\ReleaseLogs::getUrl() }}">
-                    Release logs
-                </x-filament::button>
+                @if (auth()->user()->canViewReleaseLogs())
+                    <x-filament::button class="mt-2" color="gray" icon="heroicon-o-list-bullet" tag="a"
+                        href="{{ \App\Filament\Pages\ReleaseLogs::getUrl() }}">
+                        Release logs
+                    </x-filament::button>
+                @endif
             </div>
         </div>
     </x-filament::section>

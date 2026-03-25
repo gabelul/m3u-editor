@@ -19,6 +19,11 @@ class ReleaseLogs extends Page
 
     protected static ?int $navigationSort = 3;
 
+    public static function canAccess(): bool
+    {
+        return auth()->check() && auth()->user()->canViewReleaseLogs();
+    }
+
     public function getView(): string
     {
         return 'filament.pages.release-logs';

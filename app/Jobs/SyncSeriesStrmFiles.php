@@ -656,9 +656,14 @@ class SyncSeriesStrmFiles implements ShouldQueue
                 }
 
                 // Generate the url (use cached playlist properties to avoid object access in loop)
-                $containerExtension = $ep->container_extension ?? 'mp4';
-                $url = rtrim("/series/{$playlistUser->name}/{$playlistUuid}/".$ep->id.'.'.$containerExtension, '.');
-                $url = PlaylistService::getBaseUrl($url);
+                $useOriginalUrl = ($sync_settings['url_type'] ?? 'proxy') === 'original';
+                if ($useOriginalUrl) {
+                    $url = $ep->url;
+                } else {
+                    $containerExtension = $ep->container_extension ?? 'mp4';
+                    $url = rtrim("/series/{$playlistUser->name}/{$playlistUuid}/".$ep->id.'.'.$containerExtension, '.');
+                    $url = PlaylistService::getBaseUrl($url);
+                }
 
                 // Build path options for tracking changes
                 $pathOptions = [
@@ -757,6 +762,7 @@ class SyncSeriesStrmFiles implements ShouldQueue
 
         $global_sync_settings = [
             'enabled' => $settings->stream_file_sync_enabled ?? false,
+            'url_type' => 'proxy',
             'include_category' => $settings->stream_file_sync_include_category ?? true,
             'include_series' => $settings->stream_file_sync_include_series ?? true,
             'include_season' => $settings->stream_file_sync_include_season ?? true,

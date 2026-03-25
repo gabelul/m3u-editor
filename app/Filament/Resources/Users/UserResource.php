@@ -69,6 +69,8 @@ class UserResource extends Resource
                                 'use_integrations' => 'Allow this user to access media server integrations and related features',
                                 'use_tools' => 'Allow this user to access tools like API Tokens and Post Processing',
                                 'use_stream_file_sync' => 'Allow this user to access stream file sync features',
+                                'use_scrubber' => 'Allow this user to access the Channel Scrubber feature',
+                                'view_release_logs' => 'Allow this user to view release logs and the release logs page',
                             ])
                             ->columnSpanFull()
                             ->gridDirection('row')
