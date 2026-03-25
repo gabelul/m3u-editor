@@ -22,17 +22,26 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\RenderHook;
 use Filament\Schemas\Components\Tabs\Tab;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Filament\Schemas\Components\View;
+use Filament\Schemas\Schema;
+use Filament\View\PanelsRenderHook;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
+use Livewire\Attributes\Url;
 
 class ListSeries extends ListRecords
 {
     protected static string $resource = SeriesResource::class;
 
     protected ?string $subheading = 'Only enabled series will be automatically updated on Playlist sync, this includes fetching episodes and metadata. You can also manually sync series to update episodes and metadata.';
+
+    #[Url(as: 'status')]
+    public ?string $statusFilter = 'all';
 
     protected function getHeaderActions(): array
     {
@@ -342,7 +351,17 @@ class ListSeries extends ListRecords
 
     public function getTabs(): array
     {
-        return self::setupTabs();
+        $playlists = Playlist::where('user_id', auth()->id())->orderBy('name')->get();
+
+        return [
+            'all' => Tab::make('All Playlists')
+                ->badge(Series::where('user_id', auth()->id())->count()),
+            ...($playlists->mapWithKeys(fn (Playlist $playlist) => [
+                'playlist_'.$playlist->id => Tab::make($playlist->name)
+                    ->modifyQueryUsing(fn ($query) => $query->where('playlist_id', $playlist->id))
+                    ->badge(Series::where([['user_id', auth()->id()], ['playlist_id', $playlist->id]])->count()),
+            ])->toArray()),
+        ];
     }
 
     public static function setupTabs($relationId = null): array
@@ -351,7 +370,6 @@ class ListSeries extends ListRecords
             ['user_id', auth()->id()],
         ];
 
-        // Change count based on view
         $totalCount = Series::query()
             ->where($where)
             ->when($relationId, function ($query, $relationId) {
@@ -366,21 +384,74 @@ class ListSeries extends ListRecords
                 return $query->where('category_id', $relationId);
             })->count();
 
-        // Return tabs
         return [
             'all' => Tab::make('All Series')
                 ->badge($totalCount),
             'enabled' => Tab::make('Enabled')
-                // ->icon('heroicon-m-check')
                 ->badgeColor('success')
                 ->modifyQueryUsing(fn ($query) => $query->where('enabled', true))
                 ->badge($enabledCount),
             'disabled' => Tab::make('Disabled')
-                // ->icon('heroicon-m-x-mark')
                 ->badgeColor('danger')
                 ->modifyQueryUsing(fn ($query) => $query->where('enabled', false))
                 ->badge($disabledCount),
         ];
+    }
+
+    public function content(Schema $schema): Schema
+    {
+        return $schema->components([
+            $this->getTabsContentComponent(),
+            View::make('filament.series.status-tabs'),
+            RenderHook::make(PanelsRenderHook::RESOURCE_PAGES_LIST_RECORDS_TABLE_BEFORE),
+            EmbeddedTable::make(),
+            RenderHook::make(PanelsRenderHook::RESOURCE_PAGES_LIST_RECORDS_TABLE_AFTER),
+        ]);
+    }
+
+    protected function modifyQueryWithActiveTab(Builder $query, bool $isResolvingRecord = false): Builder
+    {
+        $query = parent::modifyQueryWithActiveTab($query, $isResolvingRecord);
+
+        return match ($this->statusFilter) {
+            'enabled' => $query->where('enabled', true),
+            'disabled' => $query->where('enabled', false),
+            default => $query,
+        };
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    public function getStatusTabCounts(): array
+    {
+        $baseQuery = Series::query()
+            ->where('user_id', auth()->id());
+
+        $activeTab = $this->activeTab;
+        if ($activeTab && $activeTab !== 'all') {
+            $tabs = $this->getTabs();
+            if (isset($tabs[$activeTab])) {
+                $baseQuery = $tabs[$activeTab]->modifyQuery($baseQuery);
+            }
+        }
+
+        return [
+            'all' => (clone $baseQuery)->count(),
+            'enabled' => (clone $baseQuery)->where('enabled', true)->count(),
+            'disabled' => (clone $baseQuery)->where('enabled', false)->count(),
+        ];
+    }
+
+    public function updatedActiveTab(): void
+    {
+        parent::updatedActiveTab();
+        $this->statusFilter = 'all';
+    }
+
+    public function updatedStatusFilter(): void
+    {
+        $this->resetPage();
     }
 
     public function applyTmdbSelection(int $tmdbId, string $type, ?int $recordId, string $recordType): void

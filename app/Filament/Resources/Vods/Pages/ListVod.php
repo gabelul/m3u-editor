@@ -28,17 +28,27 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\RenderHook;
 use Filament\Schemas\Components\Tabs\Tab;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Filament\Schemas\Components\View;
+use Filament\Schemas\Schema;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Log;
+use Livewire\Attributes\Url;
 
 class ListVod extends ListRecords
 {
     protected static string $resource = VodResource::class;
 
     protected ?string $subheading = 'NOTE: VOD output order is based on: 1 Sort order, 2 Channel no. and 3 Title - in that order. You can edit your Playlist output to auto sort as well, which will define the sort order based on the playlist order.';
+
+    #[Url(as: 'status')]
+    public ?string $statusFilter = 'all';
 
     public function setPage($page, $pageName = 'page'): void
     {
@@ -402,17 +412,27 @@ class ListVod extends ListRecords
 
     public function getTabs(): array
     {
-        return self::setupTabs();
+        $where = [['user_id', auth()->id()], ['is_vod', true]];
+        $playlists = Playlist::where('user_id', auth()->id())->orderBy('name')->get();
+
+        return [
+            'all' => Tab::make('All Playlists')
+                ->badge(Channel::where($where)->count()),
+            ...($playlists->mapWithKeys(fn (Playlist $playlist) => [
+                'playlist_'.$playlist->id => Tab::make($playlist->name)
+                    ->modifyQueryUsing(fn ($query) => $query->where('playlist_id', $playlist->id))
+                    ->badge(Channel::where([...$where, ['playlist_id', $playlist->id]])->count()),
+            ])->toArray()),
+        ];
     }
 
     public static function setupTabs($relationId = null): array
     {
         $where = [
             ['user_id', auth()->id()],
-            ['is_vod', true], // Only VOD channels
+            ['is_vod', true],
         ];
 
-        // Change count based on view
         $totalCount = Channel::query()
             ->where($where)
             ->when($relationId, function ($query, $relationId) {
@@ -436,30 +456,86 @@ class ListVod extends ListRecords
                 return $query->where('group_id', $relationId);
             })->count();
 
-        // Return tabs
         return [
             'all' => Tab::make('All VOD Channels')
                 ->badge($totalCount),
             'enabled' => Tab::make('Enabled')
-                // ->icon('heroicon-m-check')
                 ->badgeColor('success')
                 ->modifyQueryUsing(fn ($query) => $query->where('enabled', true))
                 ->badge($enabledCount),
             'disabled' => Tab::make('Disabled')
-                // ->icon('heroicon-m-x-mark')
                 ->badgeColor('danger')
                 ->modifyQueryUsing(fn ($query) => $query->where('enabled', false))
                 ->badge($disabledCount),
             'failover' => Tab::make('Failover')
-                // ->icon('heroicon-m-x-mark')
                 ->badgeColor('info')
                 ->modifyQueryUsing(fn ($query) => $query->whereHas('failovers'))
                 ->badge($withFailoverCount),
             'custom' => Tab::make('Custom')
-                // ->icon('heroicon-m-x-mark')
                 ->modifyQueryUsing(fn ($query) => $query->where('is_custom', true))
                 ->badge($customCount),
         ];
+    }
+
+    public function content(Schema $schema): Schema
+    {
+        return $schema->components([
+            $this->getTabsContentComponent(),
+            View::make('filament.vods.status-tabs'),
+            RenderHook::make(PanelsRenderHook::RESOURCE_PAGES_LIST_RECORDS_TABLE_BEFORE),
+            EmbeddedTable::make(),
+            RenderHook::make(PanelsRenderHook::RESOURCE_PAGES_LIST_RECORDS_TABLE_AFTER),
+        ]);
+    }
+
+    protected function modifyQueryWithActiveTab(Builder $query, bool $isResolvingRecord = false): Builder
+    {
+        $query = parent::modifyQueryWithActiveTab($query, $isResolvingRecord);
+
+        return match ($this->statusFilter) {
+            'enabled' => $query->where('enabled', true),
+            'disabled' => $query->where('enabled', false),
+            'failover' => $query->whereHas('failovers'),
+            'custom' => $query->where('is_custom', true),
+            default => $query,
+        };
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    public function getStatusTabCounts(): array
+    {
+        $baseQuery = Channel::query()
+            ->where('user_id', auth()->id())
+            ->where('is_vod', true);
+
+        $activeTab = $this->activeTab;
+        if ($activeTab && $activeTab !== 'all') {
+            $tabs = $this->getTabs();
+            if (isset($tabs[$activeTab])) {
+                $baseQuery = $tabs[$activeTab]->modifyQuery($baseQuery);
+            }
+        }
+
+        return [
+            'all' => (clone $baseQuery)->count(),
+            'enabled' => (clone $baseQuery)->where('enabled', true)->count(),
+            'disabled' => (clone $baseQuery)->where('enabled', false)->count(),
+            'failover' => (clone $baseQuery)->whereHas('failovers')->count(),
+            'custom' => (clone $baseQuery)->where('is_custom', true)->count(),
+        ];
+    }
+
+    public function updatedActiveTab(): void
+    {
+        parent::updatedActiveTab();
+        $this->statusFilter = 'all';
+    }
+
+    public function updatedStatusFilter(): void
+    {
+        $this->resetPage();
     }
 
     public function applyTmdbSelection(int $tmdbId, string $type, ?int $recordId, string $recordType): void
