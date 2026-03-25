@@ -3,10 +3,12 @@
 use App\Filament\Pages\ExtensionsDashboard;
 use App\Filament\Resources\ExtensionPlugins\ExtensionPluginResource;
 use App\Filament\Resources\ExtensionPlugins\Pages\ListExtensionPlugins;
+use App\Filament\Resources\PluginInstallReviews\Pages\ListPluginInstallReviews;
 use App\Filament\Resources\PluginInstallReviews\PluginInstallReviewResource;
 use App\Models\ExtensionPlugin;
 use App\Models\PluginInstallReview;
 use App\Models\User;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
 
@@ -89,6 +91,29 @@ function createPluginInstallForDashboardTests(string $pluginId, int $userId, arr
     ], $overrides));
 }
 
+/**
+ * Create a zip archive fixture that is structurally valid but lacks plugin.json.
+ */
+function createMissingManifestArchiveForExtensionsTests(): string
+{
+    $directory = storage_path('app/testing-plugin-archives/extensions-dashboard');
+    $archivePath = $directory.'/missing-manifest-'.Str::lower(Str::random(6)).'.zip';
+
+    File::ensureDirectoryExists($directory);
+    File::delete($archivePath);
+
+    $zip = new \ZipArchive;
+    $opened = $zip->open($archivePath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    if ($opened !== true) {
+        throw new \RuntimeException("Unable to create test archive [{$archivePath}].");
+    }
+
+    $zip->addFromString('README.txt', 'No plugin manifest here.');
+    $zip->close();
+
+    return $archivePath;
+}
+
 it('renders the extensions dashboard with health cards, quick actions, and install queue data', function () {
     $admin = adminUserForExtensionsTests();
     $this->actingAs($admin);
@@ -135,4 +160,24 @@ it('shows the plugin installs action from the extensions list page', function ()
         ->assertOk()
         ->assertSee('Plugin Installs')
         ->assertSee('Discover Plugins');
+});
+
+it('converts staging exceptions into user-facing notifications on the install list page', function () {
+    $admin = adminUserForExtensionsTests();
+    $this->actingAs($admin);
+    $archivePath = createMissingManifestArchiveForExtensionsTests();
+
+    try {
+        $beforeCount = PluginInstallReview::query()->count();
+
+        Livewire::test(ListPluginInstallReviews::class)
+            ->call('mountAction', 'stage_archive')
+            ->set('mountedActions.0.data.archive', $archivePath)
+            ->call('callMountedAction')
+            ->assertHasNoActionErrors();
+
+        expect(PluginInstallReview::query()->count())->toBe($beforeCount);
+    } finally {
+        File::delete($archivePath);
+    }
 });

@@ -305,6 +305,33 @@ it('rejects archive entries that try to escape the staging root', function () {
     }
 });
 
+it('cleans staged archive reviews when archive extraction fails before refresh', function () {
+    $pluginId = 'archive-missing-manifest-'.Str::lower(Str::random(6));
+    $archivePath = storage_path('app/testing-plugin-archives/'.$pluginId.'.zip');
+
+    File::delete($archivePath);
+    File::ensureDirectoryExists(dirname($archivePath));
+
+    $zip = new ZipArchive;
+    $opened = $zip->open($archivePath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    if ($opened !== true) {
+        throw new RuntimeException("Unable to create zip archive [{$archivePath}].");
+    }
+
+    $zip->addFromString('README.txt', 'No plugin manifest here.');
+    $zip->close();
+
+    try {
+        expect(fn () => app(PluginManager::class)->stageArchiveReview($archivePath))
+            ->toThrow(RuntimeException::class, 'exactly one plugin.json manifest');
+
+        expect(PluginInstallReview::query()->where('source_path', $archivePath)->exists())->toBeFalse();
+    } finally {
+        File::delete($archivePath);
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
 it('stages a GitHub release archive with a pinned checksum', function () {
     $pluginId = 'github-release-'.Str::lower(Str::random(6));
     $paths = createReviewFixturePlugin($pluginId);
