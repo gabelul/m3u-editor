@@ -332,6 +332,62 @@ it('cleans staged archive reviews when archive extraction fails before refresh',
     }
 });
 
+it('discards stale install reviews when staged payload disappears before scan', function () {
+    $pluginId = 'stale-scan-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+
+    try {
+        $review = app(PluginManager::class)->stageArchiveReview($paths['archive']);
+
+        expect(is_dir((string) $review->staging_path))->toBeTrue();
+
+        File::deleteDirectory((string) $review->staging_path);
+
+        expect(fn () => app(PluginManager::class)->scanInstallReview($review))
+            ->toThrow(RuntimeException::class, 'lost its staged plugin files');
+
+        $review = $review->fresh();
+
+        expect($review->status)->toBe('discarded');
+        expect($review->scan_status)->toBe('scan_failed');
+        expect($review->scan_summary)->toContain('Restage the plugin and try again');
+        expect($review->review_notes)->toContain('discarded automatically');
+        expect($review->archive_path)->toBeNull();
+        expect($review->staging_path)->toBeNull();
+        expect($review->extracted_path)->toBeNull();
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('discards stale clean reviews when staged payload disappears before approval', function () {
+    $pluginId = 'stale-approve-'.Str::lower(Str::random(6));
+    $paths = createReviewFixturePlugin($pluginId);
+    createZipArchiveForTests($paths['source'], $paths['archive']);
+
+    try {
+        $review = app(PluginManager::class)->stageArchiveReview($paths['archive']);
+        $review = app(PluginManager::class)->scanInstallReview($review);
+
+        File::deleteDirectory((string) $review->staging_path);
+
+        expect(fn () => app(PluginManager::class)->approveInstallReview($review, true))
+            ->toThrow(RuntimeException::class, 'lost its staged plugin files');
+
+        $review = $review->fresh();
+
+        expect($review->status)->toBe('discarded');
+        expect($review->scan_status)->toBe('scan_failed');
+        expect($review->scan_summary)->toContain('Restage the plugin and try again');
+        expect($review->archive_path)->toBeNull();
+        expect($review->staging_path)->toBeNull();
+        expect($review->extracted_path)->toBeNull();
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
 it('stages a GitHub release archive with a pinned checksum', function () {
     $pluginId = 'github-release-'.Str::lower(Str::random(6));
     $paths = createReviewFixturePlugin($pluginId);

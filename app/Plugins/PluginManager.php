@@ -398,9 +398,7 @@ class PluginManager
 
     public function scanInstallReview(PluginInstallReview $review): PluginInstallReview
     {
-        if (! $review->extracted_path || ! is_dir($review->extracted_path)) {
-            throw new RuntimeException('Install review has no extracted plugin payload to scan.');
-        }
+        $review = $this->ensureReviewPayloadAvailable($review);
 
         $scan = $this->malwareScanner->scan(
             $review->extracted_path,
@@ -425,6 +423,7 @@ class PluginManager
 
     public function approveInstallReview(PluginInstallReview $review, bool $trust = false, ?int $userId = null, ?string $notes = null): PluginInstallReview
     {
+        $review = $this->ensureReviewPayloadAvailable($review);
         $review = $this->refreshInstallReview(
             $review->fresh(),
             sourcePath: $review->source_path,
@@ -1487,6 +1486,48 @@ class PluginManager
             'staging_path' => null,
             'extracted_path' => null,
         ]);
+    }
+
+    private function ensureReviewPayloadAvailable(PluginInstallReview $review): PluginInstallReview
+    {
+        $review = $review->fresh() ?? $review;
+
+        if ($review->extracted_path && is_dir($review->extracted_path)) {
+            return $review;
+        }
+
+        $this->discardMissingReviewPayload($review);
+
+        throw new RuntimeException('This install review lost its staged plugin files after a rebuild or cleanup. Restage the plugin and try again.');
+    }
+
+    private function discardMissingReviewPayload(PluginInstallReview $review): void
+    {
+        $note = 'Staged plugin files are no longer available on disk. This review was discarded automatically after a rebuild or cleanup. Restage the plugin and try again.';
+
+        $review->update([
+            'status' => 'discarded',
+            'scan_status' => 'scan_failed',
+            'scan_summary' => $note,
+            'review_notes' => $this->appendReviewNote($review->review_notes, $note),
+            'archive_path' => null,
+            'staging_path' => null,
+            'extracted_path' => null,
+        ]);
+    }
+
+    private function appendReviewNote(?string $existingNotes, string $note): string
+    {
+        $existingNotes = trim((string) $existingNotes);
+        if ($existingNotes === '') {
+            return $note;
+        }
+
+        if (Str::contains($existingNotes, $note)) {
+            return $existingNotes;
+        }
+
+        return $existingNotes.PHP_EOL.PHP_EOL.$note;
     }
 
     private function refreshInstallReview(
