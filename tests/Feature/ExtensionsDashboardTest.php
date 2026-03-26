@@ -17,6 +17,11 @@ beforeEach(function () {
     config()->set('plugins.install_mode', 'normal');
 });
 
+it('honors testing cache and session overrides', function () {
+    expect(config('cache.default'))->toBe('array');
+    expect(config('session.driver'))->toBe('array');
+});
+
 /**
  * Create an admin user for plugin dashboard and install management tests.
  */

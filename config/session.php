@@ -18,7 +18,10 @@ return [
     |
     */
 
-    'driver' => 'redis', // env('SESSION_DRIVER', 'database'),
+    'driver' => env(
+        'SESSION_DRIVER',
+        env('REDIS_ENABLED', true) ? 'redis' : 'database',
+    ),
 
     /*
     |--------------------------------------------------------------------------
@@ -73,7 +76,7 @@ return [
     |
     */
 
-    'connection' => 'session', // env('SESSION_CONNECTION'),
+    'connection' => env('SESSION_CONNECTION', 'session'),
 
     /*
     |--------------------------------------------------------------------------

@@ -90,10 +90,12 @@ services:
       - DB_CONNECTION=sqlite_testing
       - DB_DATABASE=":memory:"
       - CACHE_STORE=array
+      - CACHE_DRIVER=array
       - MAIL_MAILER=array
       - PULSE_ENABLED=false
       - QUEUE_CONNECTION=sync
       - PLUGIN_SCAN_DRIVER=fake
+      - REDIS_ENABLED=false
       - REDIS_HOST=127.0.0.1
       - REDIS_PASSWORD=
       - REDIS_SERVER_PORT=36790
@@ -101,6 +103,7 @@ services:
       - REVERB_APP_KEY=test
       - REVERB_APP_SECRET=test
       - SESSION_DRIVER=array
+      - SESSION_CONNECTION=
       - TELESCOPE_ENABLED=false
     profiles:
       - test

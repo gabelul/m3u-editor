@@ -15,9 +15,10 @@ return [
     |
     */
 
-    // IMPORTANT: Redis is required for our cache store
-    // DO NOT change this to a different cache store
-    'default' => 'redis',
+    'default' => env(
+        'CACHE_STORE',
+        env('REDIS_ENABLED', true) ? 'redis' : 'database',
+    ),
 
     /*
     |--------------------------------------------------------------------------
