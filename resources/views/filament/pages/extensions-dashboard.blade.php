@@ -5,10 +5,10 @@
                 <x-filament::card class="p-4">
                     <div class="flex items-start gap-4">
                         <div class="rounded-lg p-3
-                            @if ($card['color'] === 'green') bg-green-100 dark:bg-green-900/30
-                            @elseif ($card['color'] === 'amber') bg-amber-100 dark:bg-amber-900/30
-                            @elseif ($card['color'] === 'red') bg-red-100 dark:bg-red-900/30
-                            @else bg-blue-100 dark:bg-blue-900/30
+                            @if ($card['color'] === 'green') bg-green-100 dark:bg-green-900
+                            @elseif ($card['color'] === 'amber') bg-amber-100 dark:bg-amber-900
+                            @elseif ($card['color'] === 'red') bg-red-100 dark:bg-red-900
+                            @else bg-blue-100 dark:bg-blue-900
                             @endif">
                             <x-dynamic-component :component="$card['icon']" class="h-6 w-6 text-gray-900 dark:text-white" />
                         </div>
@@ -22,46 +22,8 @@
             @endforeach
         </div>
 
-        <div class="grid grid-cols-1 gap-6 xl:grid-cols-3">
-            <x-filament::card class="p-6 xl:col-span-1">
-                <div class="flex items-start justify-between gap-4">
-                    <div>
-                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Quick Links</h2>
-                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            Use the dashboard to move between the installed extensions list and the plugin install
-                            queue.
-                        </p>
-                    </div>
-                </div>
-
-                <div class="mt-4 flex flex-wrap gap-3">
-                    <x-filament::button tag="a" href="{{ $extensionsUrl }}" icon="heroicon-o-puzzle-piece">
-                        Open Extensions
-                    </x-filament::button>
-
-                    @if ($pluginInstallsUrl)
-                        <x-filament::button tag="a" href="{{ $pluginInstallsUrl }}" color="gray"
-                            icon="heroicon-o-archive-box">
-                            Open Plugin Installs
-                        </x-filament::button>
-                    @endif
-                </div>
-
-                @if ($canManagePlugins)
-                    <div
-                        class="mt-4 rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                        Header actions on this page handle discovery, browser uploads, local paths, local archives, and
-                        GitHub release staging.
-                    </div>
-                @else
-                    <div
-                        class="mt-4 rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                        You can monitor extension health here. Staging and trust actions remain admin-only.
-                    </div>
-                @endif
-            </x-filament::card>
-
-            <x-filament::card class="p-6 xl:col-span-2">
+        <div class="grid grid-cols-1 gap-4">
+            <x-filament::card class="p-6">
                 <div class="flex items-start justify-between gap-4">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Extensions Needing Attention
