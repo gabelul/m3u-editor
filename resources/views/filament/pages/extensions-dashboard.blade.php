@@ -5,19 +5,19 @@
                 <x-filament::card class="p-4">
                     <div class="flex items-start gap-4">
                         <div class="rounded-lg p-3
-                                    @if ($card['color'] === 'green') bg-green-100 dark:bg-green-900/30
-                                    @elseif ($card['color'] === 'amber') bg-amber-100 dark:bg-amber-900/30
-                                    @elseif ($card['color'] === 'red') bg-red-100 dark:bg-red-900/30
-                                    @else bg-blue-100 dark:bg-blue-900/30
-                                    @endif">
+                            @if ($card['color'] === 'green') bg-green-100 dark:bg-green-900/30
+                            @elseif ($card['color'] === 'amber') bg-amber-100 dark:bg-amber-900/30
+                            @elseif ($card['color'] === 'red') bg-red-100 dark:bg-red-900/30
+                            @else bg-blue-100 dark:bg-blue-900/30
+                            @endif">
                             <x-dynamic-component :component="$card['icon']" class="h-6 w-6 text-gray-900 dark:text-white" />
                         </div>
-                        <div class="min-w-0">
+                        <div class="min-w-0 flex items-center gap-1">
                             <p class="text-sm font-medium text-gray-600 dark:text-gray-400">{{ $card['label'] }}</p>
                             <p class="text-3xl font-semibold text-gray-900 dark:text-white">{{ $card['value'] }}</p>
-                            <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">{{ $card['description'] }}</p>
                         </div>
                     </div>
+                    <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">{{ $card['description'] }}</p>
                 </x-filament::card>
             @endforeach
         </div>
