@@ -2,11 +2,13 @@
 
 namespace App\Filament\Resources\EpgChannels;
 
+use App\Filament\Actions\AssetPickerAction;
 use App\Filament\Resources\EpgChannelResource\Pages;
 use App\Filament\Resources\EpgChannels\Pages\ListEpgChannels;
 use App\Jobs\EpgChannelFindAndReplace;
 use App\Jobs\EpgChannelFindAndReplaceReset;
 use App\Models\EpgChannel;
+use App\Services\DateFormatService;
 use App\Traits\HasUserFiltering;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
@@ -115,11 +117,11 @@ class EpgChannelResource extends Resource
                     ->toggleable()
                     ->sortable(),
                 TextColumn::make('created_at')
-                    ->dateTime()
+                    ->formatStateUsing(fn ($state) => app(DateFormatService::class)->format($state))
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('updated_at')
-                    ->dateTime()
+                    ->formatStateUsing(fn ($state) => app(DateFormatService::class)->format($state))
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
@@ -260,7 +262,11 @@ class EpgChannelResource extends Resource
                 ->prefixIcon('heroicon-m-globe-alt')
                 ->placeholder(fn ($record) => $record?->icon)
                 ->helperText('Leave empty to use provider icon.')
-                ->type('url'),
+                ->type('url')
+                ->suffixActions([
+                    AssetPickerAction::upload('icon_custom'),
+                    AssetPickerAction::browse('icon_custom'),
+                ]),
             TextInput::make('display_name_custom')
                 ->label('Display Name')
                 ->columnSpan(1)

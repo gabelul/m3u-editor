@@ -45,6 +45,7 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
             'app_authentication_secret' => 'encrypted',
             'app_authentication_recovery_codes' => 'encrypted:array',
             'permissions' => 'array',
+            'must_change_password' => 'boolean',
         ];
     }
 
@@ -235,6 +236,22 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
     }
 
     /**
+     * Check if user can use the Channel Scrubber feature.
+     */
+    public function canUseScrubber(): bool
+    {
+        return $this->hasPermission('use_scrubber');
+    }
+
+    /**
+     * Check if user can view release logs.
+     */
+    public function canViewReleaseLogs(): bool
+    {
+        return $this->hasPermission('view_release_logs');
+    }
+
+    /**
      * Get all available permissions.
      */
     public static function getAvailablePermissions(): array
@@ -244,6 +261,8 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
             'use_integrations' => 'Use Integrations',
             'use_tools' => 'Use Tools',
             'use_stream_file_sync' => 'Use Stream File Sync',
+            'use_scrubber' => 'Use Scrubber',
+            'view_release_logs' => 'View Release Logs',
         ];
     }
 }

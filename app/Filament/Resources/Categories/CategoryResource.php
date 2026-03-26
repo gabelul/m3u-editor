@@ -6,9 +6,14 @@ use App\Filament\Resources\Categories\Pages\EditCategory;
 use App\Filament\Resources\Categories\Pages\ListCategories;
 use App\Filament\Resources\Categories\RelationManagers\SeriesRelationManager;
 use App\Filament\Resources\CategoryResource\Pages;
+use App\Jobs\CategoryFindAndReplace;
+use App\Jobs\CategoryFindAndReplaceReset;
 use App\Jobs\ProcessM3uImportSeriesEpisodes;
 use App\Jobs\SyncSeriesStrmFiles;
 use App\Models\Category;
+use App\Models\Playlist;
+use App\Services\DateFormatService;
+use App\Services\FindReplaceService;
 use App\Services\PlaylistService;
 use App\Traits\HasUserFiltering;
 use Filament\Actions\Action;
@@ -140,11 +145,11 @@ class CategoryResource extends Resource
                     ->toggleable()
                     ->sortable(),
                 TextColumn::make('created_at')
-                    ->dateTime()
+                    ->formatStateUsing(fn ($state) => app(DateFormatService::class)->format($state))
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('updated_at')
-                    ->dateTime()
+                    ->formatStateUsing(fn ($state) => app(DateFormatService::class)->format($state))
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
@@ -454,6 +459,52 @@ class CategoryResource extends Resource
                         ->modalIcon('heroicon-o-x-circle')
                         ->modalDescription('Disable the selected categories now?')
                         ->modalSubmitActionLabel('Yes, disable now'),
+                    BulkAction::make('find-replace')
+                        ->label('Find & Replace')
+                        ->schema(fn () => FindReplaceService::getBulkActionSchema('categories'))
+                        ->action(function (Collection $records, array $data): void {
+                            app('Illuminate\Contracts\Bus\Dispatcher')
+                                ->dispatch(new CategoryFindAndReplace(
+                                    user_id: auth()->id(),
+                                    use_regex: $data['use_regex'] ?? true,
+                                    find_replace: $data['find_replace'] ?? '',
+                                    replace_with: $data['replace_with'] ?? '',
+                                    categories: $records,
+                                ));
+                        })->after(function () {
+                            Notification::make()
+                                ->success()
+                                ->title('Find & Replace started')
+                                ->body('Find & Replace working in the background. You will be notified once the process is complete.')
+                                ->send();
+                        })
+                        ->requiresConfirmation()
+                        ->icon('heroicon-o-magnifying-glass')
+                        ->color('gray')
+                        ->modalIcon('heroicon-o-magnifying-glass')
+                        ->modalDescription('Select what you would like to find and replace in the selected category names.')
+                        ->modalSubmitActionLabel('Replace now'),
+                    BulkAction::make('find-replace-reset')
+                        ->label('Undo Find & Replace')
+                        ->action(function (Collection $records): void {
+                            app('Illuminate\Contracts\Bus\Dispatcher')
+                                ->dispatch(new CategoryFindAndReplaceReset(
+                                    user_id: auth()->id(),
+                                    categories: $records,
+                                ));
+                        })->after(function () {
+                            Notification::make()
+                                ->success()
+                                ->title('Find & Replace reset started')
+                                ->body('Find & Replace reset working in the background. You will be notified once the process is complete.')
+                                ->send();
+                        })
+                        ->requiresConfirmation()
+                        ->icon('heroicon-o-arrow-uturn-left')
+                        ->color('warning')
+                        ->modalIcon('heroicon-o-arrow-uturn-left')
+                        ->modalDescription('Reset category names back to their original imported values? This will undo any find & replace changes.')
+                        ->modalSubmitActionLabel('Reset now'),
                 ]),
             ]);
     }

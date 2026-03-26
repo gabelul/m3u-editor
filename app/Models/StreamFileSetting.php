@@ -73,6 +73,7 @@ class StreamFileSetting extends Model
     {
         return [
             'enabled' => $this->enabled,
+            'url_type' => $this->url_type ?? 'proxy',
             'sync_location' => $this->location,
             'path_structure' => $this->path_structure ?? [],
             'filename_metadata' => $this->filename_metadata ?? [],

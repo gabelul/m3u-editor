@@ -218,20 +218,26 @@ class PlaylistGenerateController extends Controller
 
                     // Output the channel
                     $extInf = '#EXTINF:-1';
-                    if ($channel->catchup) {
-                        $extInf .= " catchup=\"$channel->catchup\"";
-                    }
-                    if ($channel->catchup_source) {
-                        $extInf .= " catchup-source=\"$channel->catchup_source\"";
-                    }
-                    if ($timeshift) {
-                        $extInf .= " timeshift=\"$timeshift\"";
+                    if (! $playlist->disable_catchup) {
+                        if ($channel->catchup) {
+                            $extInf .= " catchup=\"$channel->catchup\"";
+                        }
+                        if ($channel->catchup_source) {
+                            $extInf .= " catchup-source=\"$channel->catchup_source\"";
+                        }
+                        if ($timeshift) {
+                            $extInf .= " timeshift=\"$timeshift\"";
+                        }
                     }
                     if ($stationId) {
                         $extInf .= " tvc-guide-stationid=\"$stationId\"";
                     }
                     if ($epgShift) {
                         $extInf .= " tvg-shift=\"$epgShift\"";
+                    }
+                    $tmdbId = $channel->tmdb_id ?: ($channel->info['tmdb_id'] ?? $channel->movie_data['tmdb_id'] ?? null);
+                    if ($tmdbId) {
+                        $extInf .= " tmdb-id=\"{$tmdbId}\"";
                     }
                     $extInf .= " tvg-chno=\"$channelNo\" tvg-id=\"$tvgId\" tvg-name=\"$name\" tvg-logo=\"$icon\" group-title=\"$group\"";
                     echo "$extInf,".$title."\n";
@@ -280,18 +286,17 @@ class PlaylistGenerateController extends Controller
                             if ($logoProxyEnabled) {
                                 $icon = LogoProxyController::generateProxyUrl($icon);
                             }
-                            if (! (config('app.disable_m3u_xtream_format') ?? false)) {
+                            if (! (config('app.disable_m3u_xtream_format') ?? false) || $proxyEnabled) {
                                 $containerExtension = $episode->container_extension ?? 'mp4';
                                 $url = $baseUrl."/series/{$username}/{$password}/".$episode->id.".{$containerExtension}";
-                            } elseif ($proxyEnabled) {
-                                // Get the proxy URL
-                                // Pass the playlist UUID for merged/custom playlists so the correct context is used
-                                $url = ProxyFacade::getProxyUrlForEpisode(
-                                    $episode->id,
-                                    $playlist->uuid,
-                                );
                             }
                             $url = rtrim($url, '.');
+
+                            if ($proxyEnabled) {
+                                $url .= '?'.http_build_query([
+                                    'proxy' => 'true',
+                                ]);
+                            }
 
                             // Get the TVG ID
                             switch ($idChannelBy) {
@@ -313,6 +318,10 @@ class PlaylistGenerateController extends Controller
                             }
 
                             $extInf = "#EXTINF:$runtime";
+                            $episodeTmdbId = $episode->tmdb_id ?: ($episode->info['tmdb_id'] ?? null);
+                            if ($episodeTmdbId) {
+                                $extInf .= " tmdb-id=\"{$episodeTmdbId}\"";
+                            }
                             $extInf .= " tvg-chno=\"$channelNo\" tvg-id=\"$tvgId\" tvg-name=\"$name\" tvg-logo=\"$icon\" group-title=\"$group\"";
                             echo "$extInf,".$title."\n";
                             echo $url."\n";
@@ -489,7 +498,8 @@ class PlaylistGenerateController extends Controller
             foreach ($cursor as $channel) {
                 $sourceUrl = $channel->url_custom ?? $channel->url;
                 $baseUrl = ProxyFacade::getBaseUrl();
-                $extension = pathinfo($sourceUrl, PATHINFO_EXTENSION);
+                $filename = parse_url($sourceUrl, PHP_URL_PATH);
+                $extension = pathinfo($filename, PATHINFO_EXTENSION);
                 $urlPath = 'live';
                 if ($channel->is_vod) {
                     $urlPath = 'movie';
@@ -698,7 +708,7 @@ class PlaylistGenerateController extends Controller
             ]);
         }
 
-        $baseUrl = url('/');
+        $baseUrl = ProxyFacade::getBaseUrl();
 
         return response()->stream(function () use ($networks, $baseUrl, $playlist) {
             // M3U header with EPG URL

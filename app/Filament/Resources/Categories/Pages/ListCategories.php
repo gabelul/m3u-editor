@@ -3,7 +3,13 @@
 namespace App\Filament\Resources\Categories\Pages;
 
 use App\Filament\Resources\Categories\CategoryResource;
+use App\Jobs\CategoryFindAndReplace;
+use App\Jobs\CategoryFindAndReplaceReset;
 use App\Models\Playlist;
+use App\Services\FindReplaceService;
+use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Tabs\Tab;
 use Illuminate\Database\Eloquent\Builder;
@@ -16,7 +22,57 @@ class ListCategories extends ListRecords
 
     protected function getHeaderActions(): array
     {
-        return [];
+        return [
+            ActionGroup::make([
+                Action::make('find-replace')
+                    ->label('Find & Replace')
+                    ->schema(fn () => FindReplaceService::getHeaderActionSchema('categories'))
+                    ->action(function (array $data): void {
+                        app('Illuminate\Contracts\Bus\Dispatcher')
+                            ->dispatch(new CategoryFindAndReplace(
+                                user_id: auth()->id(),
+                                use_regex: $data['use_regex'] ?? true,
+                                find_replace: $data['find_replace'] ?? '',
+                                replace_with: $data['replace_with'] ?? '',
+                                playlist_id: $data['playlist'] ?? null,
+                            ));
+                    })->after(function () {
+                        Notification::make()
+                            ->success()
+                            ->title('Find & Replace started')
+                            ->body('Find & Replace working in the background. You will be notified once the process is complete.')
+                            ->send();
+                    })
+                    ->requiresConfirmation()
+                    ->icon('heroicon-o-magnifying-glass')
+                    ->color('gray')
+                    ->modalIcon('heroicon-o-magnifying-glass')
+                    ->modalDescription('Select what you would like to find and replace in your series category names.')
+                    ->modalSubmitActionLabel('Replace now'),
+                Action::make('find-replace-reset')
+                    ->label('Undo Find & Replace')
+                    ->schema(fn () => FindReplaceService::getHeaderResetSchema())
+                    ->action(function (array $data): void {
+                        app('Illuminate\Contracts\Bus\Dispatcher')
+                            ->dispatch(new CategoryFindAndReplaceReset(
+                                user_id: auth()->id(),
+                                playlist_id: $data['playlist'] ?? null,
+                            ));
+                    })->after(function () {
+                        Notification::make()
+                            ->success()
+                            ->title('Find & Replace reset started')
+                            ->body('Find & Replace reset working in the background. You will be notified once the process is complete.')
+                            ->send();
+                    })
+                    ->requiresConfirmation()
+                    ->icon('heroicon-o-arrow-uturn-left')
+                    ->color('warning')
+                    ->modalIcon('heroicon-o-arrow-uturn-left')
+                    ->modalDescription('Reset category names back to their original imported values. This will undo any find & replace changes for the selected playlist.')
+                    ->modalSubmitActionLabel('Reset now'),
+            ])->button()->label('Actions'),
+        ];
     }
 
     /**

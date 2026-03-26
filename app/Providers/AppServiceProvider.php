@@ -4,18 +4,21 @@ namespace App\Providers;
 
 use App\Console\Commands\NetworkBroadcastEnsure;
 use App\Console\Commands\NetworkBroadcastHeal;
+use App\Enums\Status;
 use App\Events\EpgCreated;
 use App\Events\EpgDeleted;
 use App\Events\EpgUpdated;
 use App\Events\PlaylistCreated;
 use App\Events\PlaylistDeleted;
 use App\Events\PlaylistUpdated;
+use App\Jobs\ProcessChannelScrubber;
 use App\Jobs\SyncMediaServer;
 use App\Livewire\BackupDestinationListRecords;
 use App\Livewire\StreamPlayer;
 use App\Livewire\TmdbSearch;
 use App\Models\Channel;
 use App\Models\ChannelFailover;
+use App\Models\ChannelScrubber;
 use App\Models\CustomPlaylist;
 use App\Models\Epg;
 use App\Models\Group;
@@ -28,6 +31,7 @@ use App\Models\PlaylistViewer;
 use App\Models\StreamFileSetting;
 use App\Models\StreamProfile;
 use App\Models\User;
+use App\Services\DateFormatService;
 use App\Services\EpgCacheService;
 use App\Services\GitInfoService;
 use App\Services\NetworkBroadcastService;
@@ -137,6 +141,9 @@ class AppServiceProvider extends ServiceProvider
 
         // Setup the services
         $this->setupServices();
+
+        // Apply user-defined timezone (when TZ env var is not set)
+        $this->applyTimezoneFromSettings();
 
         // Livewire components
         $this->registerLivewireComponents();
@@ -687,6 +694,20 @@ class AppServiceProvider extends ServiceProvider
                 Channel::where('network_id', $network->id)->delete();
             });
 
+            // ChannelScrubber
+            ChannelScrubber::creating(function (ChannelScrubber $scrubber) {
+                if (! $scrubber->user_id) {
+                    $scrubber->user_id = auth()->id();
+                }
+                $scrubber->uuid = Str::orderedUuid()->toString();
+
+                return $scrubber;
+            });
+            ChannelScrubber::created(function (ChannelScrubber $scrubber) {
+                $scrubber->update(['status' => Status::Processing, 'progress' => 0]);
+                dispatch(new ProcessChannelScrubber($scrubber->id));
+            });
+
             // StreamFileSetting
             StreamFileSetting::creating(function (StreamFileSetting $setting) {
                 if (! $setting->user_id) {
@@ -785,10 +806,46 @@ class AppServiceProvider extends ServiceProvider
     }
 
     /**
+     * Apply the user-defined application timezone from settings when the
+     * TZ environment variable is not explicitly set.
+     *
+     * When TZ is defined in the environment it always takes priority (matching
+     * standard Laravel / PHP behaviour). Otherwise, the value stored in
+     * GeneralSettings::app_timezone is applied so that all PHP date/Carbon
+     * calls use the correct timezone throughout the application.
+     */
+    private function applyTimezoneFromSettings(): void
+    {
+        // TZ environment variable always takes priority
+        $envTimezone = config('dev.timezone');
+        if (! empty($envTimezone)) {
+            config(['app.timezone' => $envTimezone]);
+            date_default_timezone_set($envTimezone);
+
+            return;
+        }
+
+        try {
+            $settings = app(GeneralSettings::class);
+            $timezone = $settings->app_timezone;
+
+            if (! empty($timezone) && in_array($timezone, \DateTimeZone::listIdentifiers(), true)) {
+                config(['app.timezone' => $timezone]);
+                date_default_timezone_set($timezone);
+            }
+        } catch (Throwable) {
+            // Settings may not be available during fresh installs / migrations
+        }
+    }
+
+    /**
      * Setup the services.
      */
     public function setupServices(): void
     {
+        // Register the date format service
+        $this->app->singleton(DateFormatService::class);
+
         // Register the proxy service
         $this->app->singleton('proxy', function () {
             return new ProxyService;

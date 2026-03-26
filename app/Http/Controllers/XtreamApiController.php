@@ -402,6 +402,12 @@ class XtreamApiController extends Controller
         // Check if this is a network playlist (pseudo-TV channels from media server content)
         $isNetworkPlaylist = $playlist instanceof Playlist && $playlist->is_network_playlist;
 
+        // Resolve the disable_catchup flag from the source Playlist
+        $sourcePlaylist = $playlist instanceof Playlist
+            ? $playlist
+            : ($playlist instanceof PlaylistAlias ? $playlist->playlist : null);
+        $disableCatchup = (bool) ($sourcePlaylist->disable_catchup ?? false);
+
         $baseUrl = ProxyFacade::getBaseUrl();
         $action = $request->input('action', 'panel');
         if (
@@ -668,8 +674,8 @@ class XtreamApiController extends Controller
                         'added' => (string) $channel->created_at->timestamp,
                         'category_id' => $channelCategoryId,
                         'category_ids' => [(int) $channelCategoryId],
-                        'tv_archive' => $channel->catchup ? 1 : 0,
-                        'tv_archive_duration' => $channel->shift ?? 0,
+                        'tv_archive' => (! $disableCatchup && $channel->catchup) ? 1 : 0,
+                        'tv_archive_duration' => $disableCatchup ? 0 : ($channel->shift ?? 0),
                         'custom_sid' => $channel->stream_id_custom ?? '',
                         'thumbnail' => $thumbnail,
                         'direct_source' => '',
@@ -962,7 +968,7 @@ class XtreamApiController extends Controller
                 }
 
                 // Metadata fetched successfully
-                $seriesItem->fresh('seasons.episodes', 'category'); // Refresh to get the latest metadata
+                $seriesItem = $seriesItem->fresh(['seasons.episodes', 'category']) ?? $seriesItem;
             }
 
             $cover = $seriesItem->cover ? (filter_var($seriesItem->cover, FILTER_VALIDATE_URL) ? $seriesItem->cover : $baseUrl."/$seriesItem->cover") : LogoCacheService::getPlaceholderUrl('poster');
@@ -1408,7 +1414,6 @@ class XtreamApiController extends Controller
                 if ($results === false) {
                     return response()->json(['error' => 'Failed to fetch VOD metadata'], 500);
                 }
-                $channel->fresh(); // Refresh to get the latest metadata
             }
 
             // Build info section - use channel's info field if available, otherwise build from channel data
@@ -1565,7 +1570,7 @@ class XtreamApiController extends Controller
                         'start_timestamp' => (string) $startTime->timestamp,
                         'stop_timestamp' => (string) $endTime->timestamp,
                         'now_playing' => ($isCurrentProgramme && $isNowPlaying) ? 1 : 0,
-                        'has_archive' => ($channel->catchup && $endTime->lt($now)) ? 1 : 0,
+                        'has_archive' => (! $disableCatchup && $channel->catchup && $endTime->lt($now)) ? 1 : 0,
                     ];
                     $count++;
                 }
@@ -1645,7 +1650,7 @@ class XtreamApiController extends Controller
                         'start_timestamp' => (string) $startTime->timestamp,
                         'stop_timestamp' => (string) $endTime->timestamp,
                         'now_playing' => ($isCurrentProgramme && $isNowPlaying) ? 1 : 0,
-                        'has_archive' => ($channel->catchup && $endTime->lt($now)) ? 1 : 0,
+                        'has_archive' => (! $disableCatchup && $channel->catchup && $endTime->lt($now)) ? 1 : 0,
                     ];
                 }
             }
@@ -1822,7 +1827,7 @@ class XtreamApiController extends Controller
                             'start_timestamp' => (string) $startTime->timestamp,
                             'stop_timestamp' => (string) $endTime->timestamp,
                             'now_playing' => ($isCurrentProgramme && $isNowPlaying) ? 1 : 0,
-                            'has_archive' => ($channel->catchup && $endTime->lt($now)) ? 1 : 0,
+                            'has_archive' => (! $disableCatchup && $channel->catchup && $endTime->lt($now)) ? 1 : 0,
                         ];
                     }
                     $result[(string) $streamId] = ['epg_listings' => $epgListings];

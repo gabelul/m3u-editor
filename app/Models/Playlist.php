@@ -55,6 +55,7 @@ class Playlist extends Model
         'auto_merge_deactivate_failover' => 'boolean',
         'auto_merge_config' => 'array',
         'find_replace_rules' => 'array',
+        'sort_alpha_config' => 'array',
         'emby_config' => 'array',
         'custom_headers' => 'array',
         'strict_live_ts' => 'boolean',
@@ -66,7 +67,9 @@ class Playlist extends Model
         'status' => Status::class,
         'id_channel_by' => PlaylistChannelId::class,
         'source_type' => PlaylistSourceType::class,
+        'disable_catchup' => 'boolean',
         'enable_channels' => 'boolean',
+        'enable_vod_channels' => 'boolean',
         'enable_series' => 'boolean',
         'auto_retry_503_count' => 'integer',
         'auto_retry_503_last_at' => 'datetime',
@@ -239,6 +242,11 @@ class Playlist extends Model
     public function epgMaps(): HasMany
     {
         return $this->hasMany(EpgMap::class);
+    }
+
+    public function channelScrubbers(): HasMany
+    {
+        return $this->hasMany(ChannelScrubber::class);
     }
 
     public function playlistAuths(): MorphToMany

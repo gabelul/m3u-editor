@@ -3,7 +3,12 @@
 namespace App\Filament\Resources\Groups\Pages;
 
 use App\Filament\Resources\Groups\GroupResource;
+use App\Jobs\GroupFindAndReplace;
+use App\Jobs\GroupFindAndReplaceReset;
 use App\Models\Playlist;
+use App\Services\FindReplaceService;
+use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\CreateAction;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
@@ -34,6 +39,57 @@ class ListGroups extends ListRecords
                         ->title('Group created')
                         ->body('You can now assign channels to this group from the Channels section.'),
                 )->slideOver(),
+            ActionGroup::make([
+                Action::make('find-replace')
+                    ->label('Find & Replace')
+                    ->schema(fn () => FindReplaceService::getHeaderActionSchema('groups'))
+                    ->action(function (array $data): void {
+                        app('Illuminate\Contracts\Bus\Dispatcher')
+                            ->dispatch(new GroupFindAndReplace(
+                                user_id: auth()->id(),
+                                use_regex: $data['use_regex'] ?? true,
+                                find_replace: $data['find_replace'] ?? '',
+                                replace_with: $data['replace_with'] ?? '',
+                                playlist_id: $data['playlist'] ?? null,
+                                group_type: 'live',
+                            ));
+                    })->after(function () {
+                        Notification::make()
+                            ->success()
+                            ->title('Find & Replace started')
+                            ->body('Find & Replace working in the background. You will be notified once the process is complete.')
+                            ->send();
+                    })
+                    ->requiresConfirmation()
+                    ->icon('heroicon-o-magnifying-glass')
+                    ->color('gray')
+                    ->modalIcon('heroicon-o-magnifying-glass')
+                    ->modalDescription('Select what you would like to find and replace in your live group names.')
+                    ->modalSubmitActionLabel('Replace now'),
+                Action::make('find-replace-reset')
+                    ->label('Undo Find & Replace')
+                    ->schema(fn () => FindReplaceService::getHeaderResetSchema())
+                    ->action(function (array $data): void {
+                        app('Illuminate\Contracts\Bus\Dispatcher')
+                            ->dispatch(new GroupFindAndReplaceReset(
+                                user_id: auth()->id(),
+                                playlist_id: $data['playlist'] ?? null,
+                                group_type: 'live',
+                            ));
+                    })->after(function () {
+                        Notification::make()
+                            ->success()
+                            ->title('Find & Replace reset started')
+                            ->body('Find & Replace reset working in the background. You will be notified once the process is complete.')
+                            ->send();
+                    })
+                    ->requiresConfirmation()
+                    ->icon('heroicon-o-arrow-uturn-left')
+                    ->color('warning')
+                    ->modalIcon('heroicon-o-arrow-uturn-left')
+                    ->modalDescription('Reset group names back to their original imported values. This will undo any find & replace changes for the selected playlist.')
+                    ->modalSubmitActionLabel('Reset now'),
+            ])->button()->label('Actions'),
         ];
     }
 
