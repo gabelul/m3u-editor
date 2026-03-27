@@ -256,12 +256,12 @@ class PluginResource extends Resource
                     ->button()
                     ->size('sm')
                     ->hiddenLabel()
-                    ->tooltip('Delete plugin')
+                    ->tooltip(fn (Plugin $record) => $record->isBundled() ? 'Cannot delete bundled plugin' : 'Delete this plugin')
                     ->label('Delete')
                     ->color('danger')
                     ->icon('heroicon-o-trash')
-                    ->visible(fn (Plugin $record) => (auth()->user()?->canManagePlugins() ?? false) && ! $record->isBundled())
-                    ->disabled(fn (Plugin $record) => $record->hasActiveRuns())
+                    ->visible(fn (Plugin $record) => auth()->user()?->canManagePlugins() ?? false)
+                    ->disabled(fn (Plugin $record) => $record->hasActiveRuns() || $record->isBundled())
                     ->requiresConfirmation()
                     ->modalHeading(fn (Plugin $record) => "Delete {$record->name}?")
                     ->modalDescription('Permanently removes the plugin files from the server and deletes its registry record, settings, and run history. This cannot be undone.')
@@ -277,6 +277,15 @@ class PluginResource extends Resource
                             ->required(),
                     ])
                     ->action(function (array $data, Plugin $record): void {
+                        if ($record->isBundled()) {
+                            Notification::make()
+                                ->danger()
+                                ->title('Delete blocked')
+                                ->body('Bundled plugins cannot be deleted.')
+                                ->send();
+
+                            return;
+                        }
                         try {
                             app(PluginManager::class)->deleteFromDisk(
                                 $record,

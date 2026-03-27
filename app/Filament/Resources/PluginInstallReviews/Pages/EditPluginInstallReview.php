@@ -7,6 +7,7 @@ use App\Models\PluginInstallReview;
 use App\Plugins\PluginManager;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
+use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Illuminate\Database\Eloquent\Model;
@@ -158,6 +159,10 @@ class EditPluginInstallReview extends EditRecord
                         }
                     }),
             ])->label('Actions')->button(),
+            DeleteAction::make()
+                ->label('Delete Record')
+                ->modalDescription('Permanently removes this install log entry. The plugin itself (if installed) is not affected.')
+                ->successRedirectUrl(PluginInstallReviewResource::getUrl()),
         ];
     }
 

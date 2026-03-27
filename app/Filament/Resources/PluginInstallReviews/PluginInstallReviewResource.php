@@ -155,10 +155,6 @@ class PluginInstallReviewResource extends Resource
             ], RecordActionsPosition::BeforeCells)
             ->toolbarActions([
                 DeleteBulkAction::make()
-                    ->hiddenLabel()
-                    ->size('sm')
-                    ->icon('heroicon-s-trash')
-                    ->color('danger')
                     ->visible(fn () => auth()->user()->canManagePlugins())
                     ->modalDescription('Removes the selected reviews from the system. This does not affect the installed plugins or their files on disk.'),
             ]);

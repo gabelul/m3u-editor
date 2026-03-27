@@ -1329,6 +1329,10 @@ class PluginManager
 
     private function scanRequiredForReview(PluginInstallReview $review): bool
     {
+        if (config('plugins.clamav.driver', 'clamav') === 'fake') {
+            return false;
+        }
+
         if (! config('plugins.clamav.required_for_trust', true)) {
             return false;
         }
