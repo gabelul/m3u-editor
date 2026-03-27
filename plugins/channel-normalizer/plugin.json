@@ -1,0 +1,98 @@
+{
+    "id": "channel-normalizer",
+    "name": "Channel Normalizer",
+    "version": "1.0.0",
+    "api_version": "1.0.0",
+    "description": "Cleans raw IPTV channel titles and resolves them to canonical identifiers via a YAML alias map. Updates stream_id for reliable EPG matching and cross-provider deduplication.",
+    "entrypoint": "Plugin.php",
+    "class": "AppLocalPlugins\\ChannelNormalizer\\Plugin",
+    "capabilities": [
+        "channel_processor"
+    ],
+    "hooks": [
+        "playlist.synced"
+    ],
+    "permissions": [
+        "db_read",
+        "db_write",
+        "filesystem_read",
+        "hook_subscriptions"
+    ],
+    "schema": {
+        "tables": []
+    },
+    "data_ownership": {
+        "tables": [],
+        "directories": [
+            "plugin-data/channel-normalizer",
+            "plugin-reports/channel-normalizer"
+        ],
+        "files": [],
+        "default_cleanup_policy": "preserve"
+    },
+    "settings": [
+        {
+            "id": "default_playlist_id",
+            "type": "model_select",
+            "model": "App\\Models\\Playlist",
+            "label_attribute": "name",
+            "multiple": true,
+            "label": "Auto-normalize playlists",
+            "description": "Which playlists to normalize automatically after sync. Leave empty to disable auto-normalization.",
+            "default": null
+        },
+        {
+            "id": "alias_path",
+            "type": "text",
+            "label": "Alias map directory",
+            "description": "Path to the directory containing YAML alias files. Defaults to /opt/normalizer/aliases if empty.",
+            "default": ""
+        },
+        {
+            "id": "overwrite_existing",
+            "type": "boolean",
+            "label": "Re-normalize already-normalized channels",
+            "description": "When enabled, re-processes channels whose stream_id is already a canonical ID. Usually unnecessary unless the alias map changed.",
+            "default": false
+        },
+        {
+            "id": "skip_vod",
+            "type": "boolean",
+            "label": "Skip VOD entries",
+            "description": "Ignore VOD/movie entries and only process live channels.",
+            "default": true
+        },
+        {
+            "id": "clean_titles",
+            "type": "boolean",
+            "label": "Set clean display titles",
+            "description": "When a channel is matched, set title_custom to the alias map's display title (e.g. \"RAI 1\" instead of \"IT| RAI 1 UHD\"). Only applies to channels without a user-set custom title.",
+            "default": false
+        }
+    ],
+    "actions": [
+        {
+            "id": "health_check",
+            "label": "Health Check",
+            "dry_run": true,
+            "fields": []
+        },
+        {
+            "id": "normalize_playlist",
+            "label": "Normalize Playlist",
+            "dry_run": false,
+            "fields": [
+                {
+                    "id": "playlist_id",
+                    "type": "model_select",
+                    "model": "App\\Models\\Playlist",
+                    "label_attribute": "name",
+                    "multiple": false,
+                    "label": "Playlist",
+                    "description": "Which playlist to normalize.",
+                    "required": true
+                }
+            ]
+        }
+    ]
+}
