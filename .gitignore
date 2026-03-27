@@ -60,3 +60,4 @@ docker-compose.local.yml
 fast-build.sh
 .opencode/
 .tmp/
+plugins/
