@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\PluginRun;
 use Illuminate\Support\Facades\Schedule;
 
 /*
@@ -52,6 +53,10 @@ Schedule::command('queue:prune-failed --hours=48')
 Schedule::command('app:prune-old-notifications --days=7')
     ->daily();
 
+// Prune old plugin run history (retention configured via PLUGIN_RUN_RETENTION_DAYS, default 7 days)
+Schedule::command('model:prune', ['--model' => [PluginRun::class]])
+    ->daily();
+
 // Ensure m3u-proxy webhook is registered (handles proxy restarts, delayed startup, etc.)
 Schedule::command('m3u-proxy:register-webhook')
     ->everyFiveMinutes()
@@ -65,6 +70,16 @@ Schedule::command('app:refresh-playlist-profiles')
 // Regenerate network schedules (hourly check, regenerates when needed)
 Schedule::command('networks:regenerate-schedules')
     ->hourly()
+    ->withoutOverlapping();
+
+// Run scheduled plugin invocations
+Schedule::command('plugins:run-scheduled')
+    ->everyMinute()
+    ->withoutOverlapping();
+
+// Mark abandoned plugin runs stale so operators can resume them.
+Schedule::command('plugins:recover-stale-runs --minutes=15')
+    ->everyMinute()
     ->withoutOverlapping();
 
 // Note: HLS broadcast files are managed by m3u-proxy service

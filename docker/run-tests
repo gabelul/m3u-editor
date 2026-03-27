@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+
+set -eu
+
+cd /var/www/html
+
+mkdir -p database
+: > database/jobs.sqlite
+
+if [ "$#" -eq 0 ]; then
+    exec php artisan test
+fi
+
+exec php artisan test "$@"

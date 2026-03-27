@@ -15,9 +15,10 @@ return [
     |
     */
 
-    // IMPORTANT: Redis is required for our cache store
-    // DO NOT change this to a different cache store
-    'default' => 'redis',
+    'default' => env(
+        'CACHE_STORE',
+        env('REDIS_ENABLED', true) ? 'redis' : 'database',
+    ),
 
     /*
     |--------------------------------------------------------------------------
@@ -106,5 +107,19 @@ return [
     */
 
     'prefix' => env('CACHE_PREFIX', Str::slug(env('APP_NAME', 'laravel'), '_').'_cache_'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Serializable Cache Values
+    |--------------------------------------------------------------------------
+    |
+    | Here you may define a list of classes that are allowed to be serialized
+    | and stored in the cache. If no classes are specified, all classes will
+    | be allowed. Note that objects stored in the cache before restricting
+    | the list may not be retrievable if their class is not included here.
+    |
+    */
+
+    'serializable_classes' => null,
 
 ];

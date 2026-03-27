@@ -10,6 +10,7 @@ use App\Filament\Widgets\DiscordWidget;
 use App\Filament\Widgets\DocumentsWidget;
 use App\Filament\Widgets\DonateCrypto;
 use App\Filament\Widgets\KoFiWidget;
+use App\Filament\Widgets\PluginsOverviewWidget;
 use App\Filament\Widgets\SharedStreamStatsWidget;
 use App\Filament\Widgets\StatsOverview;
 use App\Filament\Widgets\SystemHealthWidget;
@@ -34,7 +35,7 @@ use Filament\View\PanelsRenderHook;
 use Filament\Widgets\AccountWidget;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
-use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Blade;
@@ -107,6 +108,8 @@ class AdminPanelProvider extends PanelProvider
                     ->icon('heroicon-m-calendar-days'),
                 NavigationGroup::make('Proxy')
                     ->icon('heroicon-m-arrows-right-left'),
+                NavigationGroup::make('Plugins')
+                    ->icon('heroicon-m-puzzle-piece'),
                 NavigationGroup::make('Tools')
                     ->collapsed()
                     ->icon('heroicon-m-wrench-screwdriver'),
@@ -135,6 +138,7 @@ class AdminPanelProvider extends PanelProvider
                 DiscordWidget::class,
                 // PayPalDonateWidget::class,
                 KoFiWidget::class,
+                PluginsOverviewWidget::class,
                 // DonateCrypto::class,
                 StatsOverview::class,
                 // SharedStreamStatsWidget::class,
@@ -153,7 +157,7 @@ class AdminPanelProvider extends PanelProvider
                 DashboardMiddleware::class, // Needs to be after StartSession
                 AuthenticateSession::class,
                 ShareErrorsFromSession::class,
-                VerifyCsrfToken::class,
+                PreventRequestForgery::class,
                 SubstituteBindings::class,
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,

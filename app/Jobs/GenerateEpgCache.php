@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\Status;
 use App\Models\Epg;
+use App\Plugins\PluginHookDispatcher;
 use App\Services\EpgCacheService;
 use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -94,6 +95,15 @@ class GenerateEpgCache implements ShouldQueue
                     ->broadcast($epg->user)
                     ->sendToDatabase($epg->user);
             }
+
+            app(PluginHookDispatcher::class)->dispatch('epg.cache.generated', [
+                'epg_id' => $epg->id,
+                'playlist_ids' => $epg->getAllPlaylists()->pluck('id')->all(),
+                'user_id' => $epg->user_id,
+            ], [
+                'user_id' => $epg->user_id,
+                'dry_run' => true,
+            ]);
         } else {
             $epg->update([
                 'status' => Status::Failed,

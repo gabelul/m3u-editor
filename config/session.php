@@ -18,7 +18,10 @@ return [
     |
     */
 
-    'driver' => 'redis', // env('SESSION_DRIVER', 'database'),
+    'driver' => env(
+        'SESSION_DRIVER',
+        env('REDIS_ENABLED', true) ? 'redis' : 'database',
+    ),
 
     /*
     |--------------------------------------------------------------------------
@@ -73,7 +76,12 @@ return [
     |
     */
 
-    'connection' => 'session', // env('SESSION_CONNECTION'),
+    // 'session' is a Redis connection (DB 5); when falling back to database driver,
+    // we need an actual database connection like pgsql — not a Redis connection name
+    'connection' => env(
+        'SESSION_CONNECTION',
+        env('REDIS_ENABLED', true) ? 'session' : env('DB_CONNECTION', 'pgsql'),
+    ),
 
     /*
     |--------------------------------------------------------------------------

@@ -1,0 +1,21 @@
+<?php
+
+namespace {{ namespace }};
+
+{{ uses }}
+
+class {{ class }} implements {{ implements }}
+{
+    public function runAction(string $action, array $payload, PluginExecutionContext $context): PluginActionResult
+    {
+        return match ($action) {
+            'health_check' => PluginActionResult::success('Health check completed for {{ display_name }}.', [
+                'plugin_id' => '{{ plugin_id }}',
+                'action' => 'health_check',
+                'received_payload' => $payload,
+                'timestamp' => now()->toIso8601String(),
+            ]),
+            default => PluginActionResult::failure("Unsupported action [{$action}]"),
+        };
+    }{{ hook_method }}{{ scheduled_method }}{{ uninstall_method }}
+}

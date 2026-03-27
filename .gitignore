@@ -39,6 +39,7 @@ config/logs
 config/env
 data/
 .DS_Store
+._*
 
 # Analysis and summary reports - never commit these
 *_ANALYSIS.md
@@ -59,4 +60,5 @@ docker-compose.local.yml
 fast-build.sh
 .opencode/
 .tmp/
-
+# Local plugins are generated artifacts, not source code
+/plugins/

@@ -1,0 +1,124 @@
+##
+# Local development compose file — builds from source instead of pulling
+# the upstream image. Use for testing fork enhancements before pushing.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#   INSTALL_CLAMAV=true PLUGIN_SCAN_DRIVER=clamav CLAMAV_UPDATE_DEFINITIONS=true \
+#     docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml down -v  (clean teardown)
+##
+services:
+  m3u-editor-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV_DEPENDENCIES: "false"
+        INSTALL_CLAMAV: ${INSTALL_CLAMAV:-false}
+    container_name: m3u-editor-dev
+    environment:
+      # Timezone
+      - TZ=Etc/UTC
+
+      # Application URL
+      - APP_URL=http://localhost
+      - APP_PORT=36450
+
+      # Postgres Configuration (embedded)
+      - ENABLE_POSTGRES=true
+      - PG_DATABASE=m3ue_dev
+      - PG_USER=m3ue
+      - PG_PASSWORD=devpass
+
+      # Database Connection
+      - DB_CONNECTION=pgsql
+      - DB_HOST=localhost
+      - DB_PORT=5432
+      - DB_DATABASE=m3ue_dev
+      - DB_USERNAME=m3ue
+      - DB_PASSWORD=devpass
+
+      # Redis (embedded)
+      - REDIS_ENABLED=true
+      - REDIS_SERVER_PORT=36791
+      - REDIS_HOST=localhost
+      - REDIS_PASSWORD=devpass
+
+      # M3U Proxy (embedded)
+      - M3U_PROXY_ENABLED=true
+      - M3U_PROXY_PORT=38086
+      - M3U_PROXY_HOST=localhost
+      - M3U_PROXY_TOKEN=devpass
+
+      # Plugin malware scanning
+      - PLUGIN_SCAN_DRIVER=${PLUGIN_SCAN_DRIVER:-fake}
+      - CLAMAV_BINARY=${CLAMAV_BINARY:-clamscan}
+      - CLAMAV_UPDATE_DEFINITIONS=${CLAMAV_UPDATE_DEFINITIONS:-false}
+      - CLAMAV_TIMEOUT=${CLAMAV_TIMEOUT:-60}
+    volumes:
+      # Persistent config data (Docker-managed volume — avoids ExFAT fd limits)
+      - configdata_dev:/var/www/config
+
+      # Plugin scaffolding templates are excluded from the image build context.
+      - ./stubs:/var/www/html/stubs:ro
+
+      # PostgreSQL data
+      - pgdata_dev:/var/lib/postgresql/data
+
+      # Optional ClamAV signature cache for real plugin scan testing
+      - clamavdata_dev:/var/lib/clamav
+    restart: unless-stopped
+    ports:
+      - "36450:36450"  # App (offset from production 36400)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:36450/up"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Longer start period for first-run setup
+
+  m3u-editor-dev-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV_DEPENDENCIES: "true"
+    container_name: m3u-editor-dev-test
+    entrypoint: ["/usr/local/bin/run-tests"]
+    environment:
+      - APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      - APP_ENV=testing
+      - BROADCAST_CONNECTION=log
+      - DB_CONNECTION=sqlite_testing
+      - DB_DATABASE=":memory:"
+      - CACHE_STORE=array
+      - CACHE_DRIVER=array
+      - MAIL_MAILER=array
+      - PULSE_ENABLED=false
+      - QUEUE_CONNECTION=sync
+      - PLUGIN_SCAN_DRIVER=fake
+      - REDIS_ENABLED=false
+      - REDIS_HOST=127.0.0.1
+      - REDIS_PASSWORD=
+      - REDIS_SERVER_PORT=36790
+      - REVERB_APP_ID=test
+      - REVERB_APP_KEY=test
+      - REVERB_APP_SECRET=test
+      - SESSION_DRIVER=array
+      - SESSION_CONNECTION=
+      - TELESCOPE_ENABLED=false
+    volumes:
+      - ./tests:/var/www/html/tests:ro
+      - ./stubs:/var/www/html/stubs:ro
+      - ./Pest.php:/var/www/html/Pest.php:ro
+      - ./phpunit.xml:/var/www/html/phpunit.xml:ro
+    profiles:
+      - test
+volumes:
+  pgdata_dev:
+    driver: local
+  configdata_dev:
+    driver: local
+  clamavdata_dev:
+    driver: local
