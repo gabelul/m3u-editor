@@ -209,7 +209,7 @@ class PluginScaffoldService
 
         if ($unknown !== []) {
             throw new InvalidArgumentException(
-                'Unknown capability(s): '.implode(', ', $unknown).'. Known: '.implode(', ', $known)
+                'Unknown capability value(s): '.implode(', ', $unknown).'. Known: '.implode(', ', $known)
             );
         }
     }
