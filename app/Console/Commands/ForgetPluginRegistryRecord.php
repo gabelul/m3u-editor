@@ -10,7 +10,7 @@ class ForgetPluginRegistryRecord extends Command
 {
     protected $signature = 'plugins:forget {pluginId}';
 
-    protected $description = 'Delete only the plugin registry row, saved settings, and run history. Local files and plugin-owned data are not touched.';
+    protected $description = 'Remove a plugin from the registry, including its settings and run history. Local files stay on disk.';
 
     public function handle(PluginManager $pluginManager): int
     {
