@@ -219,7 +219,7 @@ class PluginScaffoldService
      */
     private function validateHooks(array $hooks): void
     {
-        $known = config('plugins.hooks', []);
+        $known = array_keys(config('plugins.hooks', []));
         $unknown = array_values(array_diff($hooks, $known));
 
         if ($unknown !== []) {
@@ -325,11 +325,12 @@ class PluginScaffoldService
         bool $withLifecycleHook,
     ): string {
         $namespace = "AppLocalPlugins\\{$classSegment}";
-        $contractMap = config('plugins.capabilities', []);
+        // Extract the interface class from each capability's config (now nested arrays)
+        $capabilitiesConfig = config('plugins.capabilities', []);
         $interfaceClasses = ['App\\Plugins\\Contracts\\PluginInterface'];
 
         foreach ($capabilities as $capability) {
-            $interfaceClasses[] = $contractMap[$capability];
+            $interfaceClasses[] = $capabilitiesConfig[$capability]['interface'];
         }
 
         if ($hooks !== []) {
@@ -350,7 +351,7 @@ class PluginScaffoldService
             $interfaceClasses,
         );
 
-        $scheduledCapabilityInterface = $contractMap['scheduled'] ?? null;
+        $scheduledCapabilityInterface = $capabilitiesConfig['scheduled']['interface'] ?? null;
         $hasScheduledCapability = $scheduledCapabilityInterface !== null
             && in_array($scheduledCapabilityInterface, $interfaceClasses, true);
 

@@ -112,20 +112,36 @@ return [
     ],
 
     'capabilities' => [
-        'epg_processor' => EpgProcessorPluginInterface::class,
-        'channel_processor' => ChannelProcessorPluginInterface::class,
-        'stream_analysis' => StreamAnalysisPluginInterface::class,
-        'scheduled' => ScheduledPluginInterface::class,
+        'channel_processor' => [
+            'interface' => ChannelProcessorPluginInterface::class,
+            'label' => 'Channel Processor',
+            'description' => 'Process or transform channels',
+        ],
+        'epg_processor' => [
+            'interface' => EpgProcessorPluginInterface::class,
+            'label' => 'EPG Processor',
+            'description' => 'Process or enrich EPG data',
+        ],
+        'stream_analysis' => [
+            'interface' => StreamAnalysisPluginInterface::class,
+            'label' => 'Stream Analysis',
+            'description' => 'Analyze stream health and quality',
+        ],
+        'scheduled' => [
+            'interface' => ScheduledPluginInterface::class,
+            'label' => 'Scheduled',
+            'description' => 'Run actions on a cron schedule',
+        ],
     ],
 
     'hooks' => [
-        'playlist.synced',
-        'epg.synced',
-        'epg.cache.generated',
-        'before.epg.map',
-        'after.epg.map',
-        'before.epg.output.generate',
-        'after.epg.output.generate',
+        'playlist.synced' => 'After a playlist finishes syncing',
+        'epg.synced' => 'After EPG data finishes syncing',
+        'epg.cache.generated' => 'After EPG cache XML files are rebuilt',
+        'before.epg.map' => 'Before EPG mapping runs',
+        'after.epg.map' => 'After EPG mapping runs',
+        'before.epg.output.generate' => 'Before EPG output generation',
+        'after.epg.output.generate' => 'After EPG output generation',
     ],
 
     'field_types' => [
