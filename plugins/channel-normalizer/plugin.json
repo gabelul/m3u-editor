@@ -16,6 +16,8 @@
         "db_read",
         "db_write",
         "filesystem_read",
+        "filesystem_write",
+        "queue_jobs",
         "hook_subscriptions"
     ],
     "schema": {
