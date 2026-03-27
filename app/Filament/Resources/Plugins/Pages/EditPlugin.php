@@ -133,15 +133,17 @@ class EditPlugin extends EditRecord
                         $this->refreshFormData(['validation_status', 'validation_errors_json']);
                     }),
                 Action::make('verify_integrity')
-                    ->label('Verify Integrity')
+                    ->label('Check for File Changes')
                     ->icon('heroicon-o-finger-print')
                     ->visible(fn () => $canManagePlugins)
                     ->action(function () use ($record): void {
                         $plugin = app(PluginManager::class)->verifyIntegrity($record);
 
                         Notification::make()
-                            ->title('Integrity refreshed')
-                            ->body("Integrity is now [{$plugin->integrity_status}] and trust is [{$plugin->trust_state}].")
+                            ->title('File check complete')
+                            ->body($plugin->hasVerifiedIntegrity()
+                                ? 'No changes detected — plugin files match the trusted version.'
+                                : "Files have been modified. Trust status is now [{$plugin->trust_state}].")
                             ->color($plugin->hasVerifiedIntegrity() ? 'success' : 'warning')
                             ->send();
 
@@ -155,7 +157,7 @@ class EditPlugin extends EditRecord
                     ->hidden(fn () => $this->record->isTrusted() && $this->record->hasVerifiedIntegrity())
                     ->disabled(fn () => $this->record->validation_status !== 'valid' || ! $this->record->available || ! $this->record->isInstalled())
                     ->requiresConfirmation()
-                    ->modalDescription('Trust pins the current plugin hashes, verifies integrity, and applies any declared plugin-owned schema through the host.')
+                    ->modalDescription('Trusting a plugin locks its current files as the approved version and sets up any database tables or storage the plugin needs.')
                     ->action(function () use ($record): void {
                         try {
                             app(PluginManager::class)->trust($record, auth()->id());
@@ -199,12 +201,12 @@ class EditPlugin extends EditRecord
             // Lifecycle management group
             ActionGroup::make([
                 Action::make('stage_review')
-                    ->label('Stage Current Files For Review')
+                    ->label('Submit for Security Review')
                     ->icon('heroicon-o-archive-box')
                     ->requiresConfirmation()
                     ->color('warning')
-                    ->modalDescription('This creates a staged review of the current plugin files for ClamAV scanning and admin approval in Plugin Installs. This is typically used after updating plugin files via the filesystem or after a failed install attempt to trigger a new review without needing to re-upload files.')
-                    ->modalSubmitActionLabel('Stage for review')
+                    ->modalDescription('Creates a new security review of this plugin\'s current files. Use this after updating plugin files on disk or after a failed install to re-trigger the review process without re-uploading.')
+                    ->modalSubmitActionLabel('Submit for review')
                     ->visible(fn () => $canManagePlugins && filled($this->record->path) && $this->record->available)
                     ->action(function () use ($record): void {
                         $review = app(PluginManager::class)->stageDirectoryReview(
@@ -215,8 +217,8 @@ class EditPlugin extends EditRecord
 
                         Notification::make()
                             ->success()
-                            ->title('Plugin install staged')
-                            ->body("Plugin install #{$review->id} is ready for ClamAV scan and approval in Plugin Installs.")
+                            ->title('Security review created')
+                            ->body("Review #{$review->id} is queued — check Plugin Installs to scan and approve it.")
                             ->send();
                     }),
                 Action::make('reinstall')
@@ -227,7 +229,7 @@ class EditPlugin extends EditRecord
                     ->hidden(fn () => $this->record->isInstalled())
                     ->disabled(fn () => ! $this->record->available)
                     ->requiresConfirmation()
-                    ->modalDescription('Reinstalling makes this plugin eligible to run again. Saved settings stay in place unless you previously purged plugin-owned data.')
+                    ->modalDescription('Reinstalling makes this plugin eligible to run again. Settings are preserved unless you deleted its data during uninstall.')
                     ->action(function () use ($record): void {
                         $plugin = app(PluginManager::class)->reinstall($record);
 
@@ -249,17 +251,17 @@ class EditPlugin extends EditRecord
                     ->hidden(fn () => ! $this->record->isInstalled())
                     ->requiresConfirmation()
                     ->modalHeading('Uninstall plugin')
-                    ->modalDescription('Uninstalling disables the plugin immediately. Preserve keeps plugin-owned data for later reinstall. Purge deletes only the plugin-owned tables and storage paths declared in the manifest. If a run is still active, the system will request cancellation before any purge is allowed.')
+                    ->modalDescription('Uninstalling disables the plugin immediately. You can keep the plugin\'s data for a future reinstall, or delete everything it created. Active jobs will be cancelled first.')
                     ->schema([
                         Select::make('cleanup_mode')
-                            ->label('Data cleanup')
+                            ->label('What to do with plugin data')
                             ->options([
-                                'preserve' => 'Preserve plugin-owned data',
-                                'purge' => 'Purge plugin-owned data',
+                                'preserve' => 'Keep database tables and files (can reinstall later)',
+                                'purge' => 'Delete database tables and files permanently',
                             ])
                             ->default(fn () => $record->defaultCleanupMode())
                             ->required()
-                            ->helperText('Disable is reversible. Uninstall changes the lifecycle state and optionally purges plugin-owned tables, files, and report directories.'),
+                            ->helperText('Disabling is reversible. Uninstalling changes the plugin\'s status and optionally removes its database tables, files, and reports.'),
                     ])
                     ->action(function (array $data) use ($record): void {
                         try {
@@ -273,8 +275,8 @@ class EditPlugin extends EditRecord
                                 ->success()
                                 ->title('Plugin uninstalled')
                                 ->body(($data['cleanup_mode'] ?? 'preserve') === 'purge'
-                                    ? 'The plugin was disabled and its declared plugin-owned data was purged.'
-                                    : 'The plugin was disabled and marked uninstalled. Plugin-owned data was preserved for a possible reinstall.')
+                                    ? 'Plugin disabled and its database tables and files have been deleted.'
+                                    : 'Plugin disabled and marked as uninstalled. Data was kept for a possible reinstall.')
                                 ->send();
 
                             $this->refreshFormData(['enabled', 'installation_status', 'last_cleanup_mode', 'uninstalled_at']);

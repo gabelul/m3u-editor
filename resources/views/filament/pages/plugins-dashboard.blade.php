@@ -29,8 +29,8 @@
                         <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Plugins Needing Attention
                         </h2>
                         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            These extensions need review because of trust, integrity, validation, availability, or
-                            install state.
+                            These plugins have issues that need your attention — they may be blocked, modified, invalid, or
+                            incomplete.
                         </p>
                     </div>
                     <x-filament::badge color="warning" size="sm">
@@ -41,7 +41,7 @@
                 @if ($attentionPlugins->isEmpty())
                     <div
                         class="mt-4 rounded-xl border border-dashed border-green-300 bg-green-50 p-4 text-sm text-green-700 dark:border-green-900 dark:bg-green-950/40 dark:text-green-300">
-                        No extensions currently need operator attention.
+                        No plugins currently need attention.
                     </div>
                 @else
                     <div class="mt-4 space-y-3">
@@ -63,9 +63,9 @@
                                         <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">
                                             Trust:
                                             {{ str($plugin->trust_state ?: 'pending_review')->replace('_', ' ')->headline() }}
-                                            · Integrity:
+                                            · Files:
                                             {{ str($plugin->integrity_status ?: 'unknown')->replace('_', ' ')->headline() }}
-                                            · Install:
+                                            · Status:
                                             {{ str($plugin->installation_status ?: 'installed')->replace('_', ' ')->headline() }}
                                         </p>
                                     </div>
@@ -148,7 +148,7 @@
                     <div>
                         <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Recent Plugin Installs</h2>
                         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            The latest staged, approved, rejected, or installed extension review records.
+                            Recent plugin uploads — pending approval, approved, or rejected.
                         </p>
                     </div>
                     <x-filament::button tag="a" href="{{ $pluginInstallsUrl }}" color="gray" size="sm"
@@ -160,7 +160,7 @@
                 @if ($recentInstallReviews->isEmpty())
                     <div
                         class="mt-4 rounded-xl border border-dashed border-gray-300 p-4 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                        No plugin installs have been staged yet.
+                        No plugin installs yet.
                     </div>
                 @else
                     <div class="mt-4 space-y-3">

@@ -30,7 +30,7 @@ class PluginInstallActions
                 Notification::make()
                     ->success()
                     ->title('Plugin discovery completed')
-                    ->body('Synced '.count($plugins).' plugin(s) into the registry.')
+                    ->body('Found and loaded '.count($plugins).' plugin(s).')
                     ->send();
             });
     }
@@ -64,11 +64,11 @@ class PluginInstallActions
                         TextInput::make('path')
                             ->label('Plugin Directory Path')
                             ->required()
-                            ->helperText('Use a path the host/container can already read. This action does not upload files from the browser.'),
+                            ->helperText('Enter a path on your server. This reads files from the server directly, not from your browser.'),
                         Toggle::make('dev_source')
-                            ->label('Mark as dev-source plugin')
+                            ->label('This is a development/testing plugin')
                             ->default(false)
-                            ->helperText('For configured dev directories only. Do not use this path for production installs.'),
+                            ->helperText('Only check this for plugins you\'re actively developing locally. Don\'t use for production installs.'),
                     ])
                     ->action(function (array $data): void {
                         self::runStagingAction(
@@ -129,7 +129,7 @@ class PluginInstallActions
                         TextInput::make('archive')
                             ->label('Archive Path')
                             ->required()
-                            ->helperText('Use a zip/tar path the host/container can already read. This action does not upload files from the browser.'),
+                            ->helperText('Enter the archive path on your server. This reads the file directly, not from your browser.'),
                     ])
                     ->action(function (array $data): void {
                         self::runStagingAction(
@@ -151,9 +151,9 @@ class PluginInstallActions
                             ->required()
                             ->helperText('Use the GitHub release asset URL from the published release.'),
                         TextInput::make('sha256')
-                            ->label('Expected SHA-256')
+                            ->label('Security Hash (SHA-256)')
                             ->required()
-                            ->helperText('Pin the published release checksum before the host downloads the archive.'),
+                            ->helperText('Copy the file hash from the GitHub release page to verify the download hasn\'t been tampered with.'),
                     ])
                     ->action(function (array $data): void {
                         self::runStagingAction(
@@ -184,8 +184,8 @@ class PluginInstallActions
                 ->success()
                 ->title($successTitle)
                 ->body(config('plugins.clamav.driver', 'fake') === 'fake'
-                    ? "Plugin install #{$review->id} is ready for validation."
-                    : "Plugin install #{$review->id} is ready for validation and scan.")
+                    ? "Review #{$review->id} is queued for approval."
+                    : "Review #{$review->id} is queued for security scan and approval.")
                 ->send();
         } catch (Throwable $exception) {
             Notification::make()
