@@ -51,7 +51,7 @@ class PluginValidator
             }
         }
 
-        $knownHooks = config('plugins.hooks', []);
+        $knownHooks = array_keys(config('plugins.hooks', []));
         foreach ($manifest->hooks as $hook) {
             if (! is_string($hook) || ! in_array($hook, $knownHooks, true)) {
                 $errors[] = "Unknown hook [{$hook}]";
@@ -267,7 +267,7 @@ class PluginValidator
         $interfaces = [PluginInterface::class];
 
         foreach ($manifest->capabilities as $capability) {
-            $requiredInterface = config("plugins.capabilities.{$capability}");
+            $requiredInterface = config("plugins.capabilities.{$capability}.interface");
             if (is_string($requiredInterface) && $requiredInterface !== '') {
                 $interfaces[] = ltrim($requiredInterface, '\\');
             }

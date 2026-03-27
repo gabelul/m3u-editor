@@ -69,14 +69,14 @@ class PluginResource extends Resource
                     Tab::make('Overview')
                         ->icon('heroicon-m-puzzle-piece')
                         ->schema([
-                            Section::make('Control Center')
+                            Section::make('Overview')
                                 ->compact()
                                 ->schema([
                                     Placeholder::make('hero_panel')
                                         ->hiddenLabel()
                                         ->content(fn (?Plugin $record): HtmlString => new HtmlString(self::heroPanel($record))),
                                 ]),
-                            Section::make('Operational Snapshot')
+                            Section::make('Current Status')
                                 ->compact()
                                 ->columns(3)
                                 ->schema([
@@ -120,8 +120,8 @@ class PluginResource extends Resource
                                             Placeholder::make('hooks_display')
                                                 ->hiddenLabel()
                                                 ->content(fn (?Plugin $record): HtmlString => new HtmlString(self::infoCard(
-                                                    'Hook Subscriptions',
-                                                    'Background entry points the framework can trigger automatically.',
+                                                    'Event Triggers',
+                                                    'Events that automatically run this plugin in the background.',
                                                     self::pillList(
                                                         collect($record?->hooks ?? [])->all(),
                                                         'This plugin only runs when you trigger one of its header actions.',
@@ -130,17 +130,17 @@ class PluginResource extends Resource
                                             Placeholder::make('plugin_identity')
                                                 ->hiddenLabel()
                                                 ->content(fn (?Plugin $record): HtmlString => new HtmlString(self::infoCard(
-                                                    'Plugin Contract',
-                                                    'Version, implementation source, and what to expect from this plugin.',
+                                                    'Plugin Info',
+                                                    'Version, source, and type of this plugin.',
                                                     self::pluginIdentity($record),
                                                 ))),
                                         ]),
                                 ]),
-                            Section::make('Advanced Diagnostics')
+                            Section::make('Technical Details')
                                 ->compact()
                                 ->collapsible()
                                 ->collapsed()
-                                ->description('Only useful when a plugin is invalid, missing, or behaving unexpectedly.')
+                                ->description('Internal state for troubleshooting — you shouldn\'t need this unless something is broken.')
                                 ->schema([
                                     Grid::make(2)
                                         ->schema([

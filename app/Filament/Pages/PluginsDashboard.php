@@ -49,7 +49,7 @@ class PluginsDashboard extends Page
      */
     public function getSubheading(): ?string
     {
-        return 'Manage installed plugins, plugin installs, and trust posture from one place.';
+        return 'Manage installed plugins, review new installs, and check security status from one place.';
     }
 
     /**
@@ -111,7 +111,7 @@ class PluginsDashboard extends Page
                     ->where('trust_state', 'trusted')
                     ->where('integrity_status', 'verified')
                     ->count(),
-                'description' => 'Installed plugins that are valid, trusted, and integrity-verified.',
+                'description' => 'Installed plugins that passed validation, are trusted, and haven\'t been modified.',
                 'icon' => 'heroicon-s-shield-check',
                 'color' => 'green',
             ],
@@ -120,14 +120,14 @@ class PluginsDashboard extends Page
                 'value' => PluginInstallReview::query()
                     ->whereIn('status', ['staged', 'scanned', 'review_ready'])
                     ->count(),
-                'description' => 'Queued installs waiting for scan, approval, or trust.',
+                'description' => 'Uploads waiting for security scan or admin approval.',
                 'icon' => 'heroicon-s-arrow-down-tray',
                 'color' => 'amber',
             ],
             [
                 'label' => 'Plugins Needing Attention',
                 'value' => $this->attentionPluginQuery()->count(),
-                'description' => 'Plugins blocked by trust, integrity, validation, or install state.',
+                'description' => 'Plugins that are blocked, modified, invalid, or not fully installed.',
                 'icon' => 'heroicon-s-exclamation-triangle',
                 'color' => 'red',
             ],
@@ -249,7 +249,7 @@ class PluginsDashboard extends Page
         }
 
         if ($plugin->integrity_status === 'changed') {
-            return 'Integrity Changed';
+            return 'Files Changed';
         }
 
         if ($plugin->validation_status !== 'valid') {
