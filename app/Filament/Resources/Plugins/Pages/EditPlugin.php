@@ -286,13 +286,16 @@ class EditPlugin extends EditRecord
                                 ->send();
                         }
                     }),
+            ])->label('Manage')->icon('heroicon-o-cog-6-tooth')->button(),
+
+            ActionGroup::make([
                 DeleteAction::make()
                     ->label('Forget Registry Record')
                     ->visible(fn () => $canManagePlugins)
                     ->disabled(fn () => $this->record->hasActiveRuns())
                     ->modalDescription('This deletes the registry row, saved plugin settings, and recorded run history. It does not uninstall the local plugin files and does not clean plugin-owned data. Discovery will register the plugin again if its folder still exists.')
                     ->successRedirectUrl(PluginResource::getUrl()),
-            ])->label('Manage')->icon('heroicon-o-cog-6-tooth')->button(),
+            ])->label('Danger')->icon('heroicon-o-exclamation-triangle')->color('danger')->button(),
         ];
     }
 }
