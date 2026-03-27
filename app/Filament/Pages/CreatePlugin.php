@@ -98,14 +98,8 @@ class CreatePlugin extends Page implements HasForms
                                         ->hiddenLabel()
                                         ->options(
                                             collect(config('plugins.capabilities', []))
-                                                ->mapWithKeys(fn (string $interface, string $key) => [
-                                                    $key => match ($key) {
-                                                        'channel_processor' => 'Channel Processor — process or transform channels',
-                                                        'epg_processor' => 'EPG Processor — process or enrich EPG data',
-                                                        'stream_analysis' => 'Stream Analysis — analyze stream health and quality',
-                                                        'scheduled' => 'Scheduled — run actions on a cron schedule',
-                                                        default => Str::headline($key),
-                                                    },
+                                                ->mapWithKeys(fn (array $cap, string $key) => [
+                                                    $key => ($cap['label'] ?? Str::headline($key)).' — '.($cap['description'] ?? ''),
                                                 ])
                                                 ->all()
                                         )
@@ -118,17 +112,8 @@ class CreatePlugin extends Page implements HasForms
                                         ->hiddenLabel()
                                         ->options(
                                             collect(config('plugins.hooks', []))
-                                                ->mapWithKeys(fn (string $hook) => [
-                                                    $hook => match ($hook) {
-                                                        'playlist.synced' => 'playlist.synced — after a playlist finishes syncing',
-                                                        'epg.synced' => 'epg.synced — after EPG data finishes syncing',
-                                                        'epg.cache.generated' => 'epg.cache.generated — after EPG cache XML files are rebuilt',
-                                                        'before.epg.map' => 'before.epg.map — before EPG mapping runs',
-                                                        'after.epg.map' => 'after.epg.map — after EPG mapping runs',
-                                                        'before.epg.output.generate' => 'before.epg.output.generate — before EPG output generation',
-                                                        'after.epg.output.generate' => 'after.epg.output.generate — after EPG output generation',
-                                                        default => $hook,
-                                                    },
+                                                ->mapWithKeys(fn (string $description, string $hook) => [
+                                                    $hook => "{$hook} — {$description}",
                                                 ])
                                                 ->all()
                                         )
