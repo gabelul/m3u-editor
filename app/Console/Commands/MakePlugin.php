@@ -295,6 +295,11 @@ class MakePlugin extends Command
             '{{ hooks_list }}' => $this->bulletList($hooks, 'No hooks declared yet.'),
         ];
 
+        // Skill references go into both .agents/ and .claude/ for cross-tool compatibility
+        // .agents/ = Codex, Cursor, Windsurf, Gemini CLI, GitHub Copilot, etc.
+        // .claude/ = Claude Code specifically
+        $skillPaths = ['.agents/skills/plugin-dev', '.claude/skills/plugin-dev'];
+
         $files = [
             'README.md' => 'stubs/plugins/README.stub',
             'AGENTS.md' => 'stubs/plugins/AGENTS.stub',
@@ -303,6 +308,14 @@ class MakePlugin extends Command
             'scripts/package-plugin.sh' => 'stubs/plugins/package-plugin.stub',
             'scripts/validate-plugin.php' => 'stubs/plugins/validate-plugin.stub',
         ];
+
+        // Generate the skill in both discovery paths
+        foreach ($skillPaths as $skillDir) {
+            $files["{$skillDir}/SKILL.md"] = 'stubs/plugins/plugin-dev-skill.stub';
+            $files["{$skillDir}/references/manifest.md"] = 'stubs/plugins/skill-ref-manifest.stub';
+            $files["{$skillDir}/references/hooks-and-capabilities.md"] = 'stubs/plugins/skill-ref-hooks.stub';
+            $files["{$skillDir}/references/models.md"] = 'stubs/plugins/skill-ref-models.stub';
+        }
 
         foreach ($files as $relativePath => $stubPath) {
             $destinationPath = $pluginPath.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
