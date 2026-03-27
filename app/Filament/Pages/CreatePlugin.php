@@ -14,6 +14,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Wizard;
 use Filament\Schemas\Components\Wizard\Step;
 use Filament\Schemas\Schema;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -151,16 +152,16 @@ class CreatePlugin extends Page
                         ]),
                 ])
                     ->columnSpanFull()
-                    ->submitAction(new HtmlString(<<<'HTML'
+                    ->submitAction(new HtmlString(Blade::render(<<<'BLADE'
                         <div class="flex gap-3">
                             <x-filament::button wire:click="installToPlugins" color="primary" icon="heroicon-o-folder-plus">
-                                Install to plugins/
+                                Install to plugins
                             </x-filament::button>
                             <x-filament::button wire:click="downloadZip" color="gray" icon="heroicon-o-arrow-down-tray">
                                 Download as ZIP
                             </x-filament::button>
                         </div>
-                    HTML)),
+                    BLADE))),
             ])
             ->statePath('data');
     }
