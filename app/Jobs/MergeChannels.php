@@ -565,12 +565,13 @@ class MergeChannels implements ShouldQueue
     {
         $masterUrl = $this->resolveEffectiveUrl($master);
 
-        if ($masterUrl === null) {
-            return $group;
-        }
-
         return $group->filter(function (Channel $channel) use ($masterUrl, $master) {
-            if ($this->resolveEffectiveUrl($channel) === $masterUrl) {
+            // A master with no URL has nothing to compare against, so the
+            // duplicate-URL check is skipped for it - but the title guard still
+            // has to run. Returning the whole group early here let every
+            // candidate through whenever the master's URL was empty, which
+            // silently disabled the guard for exactly those records.
+            if ($masterUrl !== null && $this->resolveEffectiveUrl($channel) === $masterUrl) {
                 return false;
             }
 
@@ -593,12 +594,17 @@ class MergeChannels implements ShouldQueue
      */
     protected function titlesArePlausiblyTheSameChannel(Channel $master, Channel $candidate): bool
     {
-        if ($this->minTitleSimilarity <= 0.0) {
+        // A job queued before this property existed unserialises without it,
+        // and reading an uninitialised typed property is a fatal error. Treat a
+        // missing value as the default, so old payloads drain normally.
+        $threshold = isset($this->minTitleSimilarity) ? $this->minTitleSimilarity : 0.0;
+
+        if ($threshold <= 0.0) {
             return true;
         }
 
         return app(ChannelTitleSimilarityService::class)
-            ->isPlausibleMatch($master, $candidate, $this->minTitleSimilarity);
+            ->isPlausibleMatch($master, $candidate, $threshold);
     }
 
     /**
